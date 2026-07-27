@@ -1,36 +1,70 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AroundNet Web
 
-## Getting Started
+Web tournament manager for **AroundNet** (Roundnet/Spikeball). A Next.js app that
+reads and writes the **same Supabase backend as the iOS app** — tournaments, groups,
+brackets and scores sync live in both directions. Mirrors the iOS design system
+(lime-on-black) and calls the same Supabase edge functions for all tournament logic.
 
-First, run the development server:
+## Stack
+
+- Next.js (App Router, TypeScript) — **static export** (`output: "export"`)
+- Tailwind CSS v4 (theme in `app/globals.css`)
+- Supabase (`@supabase/supabase-js`) — auth (email OTP code), Postgres reads, edge functions, realtime
+- MapLibre GL + CARTO dark tiles (no API key)
+- Deployed to **GitHub Pages** via GitHub Actions
+
+## Local development
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev        # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The Supabase URL + publishable key are baked in as defaults (public, RLS-protected).
+Override with `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` if needed.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Routing note (static export)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Entity pages use **query-param routing** (`/tournament/?id=…`) rather than dynamic
+segments, because `output: "export"` can't pre-render runtime-created ids. Each route
+is a real exported page, so refresh/deep-link works on GitHub Pages.
 
-## Learn More
+## Deploying to GitHub Pages
 
-To learn more about Next.js, take a look at the following resources:
+1. Create an empty GitHub repo named **`aroundnet-web`** and push this code to `main`.
+   (If you use a different repo name or a custom domain, update `NEXT_PUBLIC_BASE_PATH`
+   in `.github/workflows/deploy.yml` — set it to `""` for a root/custom-domain site.)
+2. Repo **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+3. Push to `main`; the workflow builds the static export and deploys it.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Required Supabase configuration (owner)
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- **Email OTP code template:** sign-in uses a 6-digit code (no redirect URLs / PKCE needed —
+  correct for a static SPA). The code comes from `{{ .Token }}`, so the **Magic Link** email
+  template (Supabase **Auth → Email Templates → Magic Link**) must include it, e.g.
+  `Your code: {{ .Token }}`. Without it the email has no code to enter.
+- **Row Level Security:** the project currently has RLS **disabled** on `group_matches`
+  and `bracket_matches`. Since this app ships the anon key in the browser, enable RLS with
+  policies before public launch:
+  ```sql
+  ALTER TABLE public.group_matches   ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE public.bracket_matches ENABLE ROW LEVEL SECURITY;
+  -- add SELECT + organiser-write policies mirroring the matches/stages tables
+  ```
 
-## Deploy on Vercel
+## Project layout
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```
+app/                    routes (all client components)
+  page.tsx              landing: MapLibre + list + filters
+  login/ auth/callback/ magic-link sign-in
+  tournament/          detail, day console, new, edit, register (query-param ?id=)
+  profile/
+components/             design-system UI + feature components
+  ui/                   Button, Card, Chip, Dialog, Tabs, …
+  day/                  group + bracket setup dialogs
+lib/
+  supabase/            client, queries, mutations, edge-function wrappers, realtime, types
+  hooks/               useTournament (load + realtime)
+  types.ts             row aliases + composed view models
+```

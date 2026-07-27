@@ -1,26 +1,49 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* ── AroundNet design system (mirrors iOS DesignSystem.swift + Assets.xcassets) ──
+   Dark-first. Brand lime on near-black. */
+@theme {
+  --color-background: #111111;
+  --color-surface: #1e1e1e;
+  --color-surface-high: #252525;
+  --color-divider: #2a2a2a;
+  --color-accent: #c7ff00;
+  --color-accent-muted: rgba(199, 255, 0, 0.12);
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #8a8a8a;
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-destructive: #ef4444;
+
+  --radius-card: 10px;
+  --radius-button: 10px;
+  --radius-small: 8px;
+  --radius-pill: 100px;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro",
+    system-ui, "Segoe UI", Roboto, sans-serif;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  color-scheme: dark;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-background);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Thin, dark scrollbars to match the theme */
+* {
+  scrollbar-color: var(--color-divider) transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-divider);
+  border-radius: 100px;
 }

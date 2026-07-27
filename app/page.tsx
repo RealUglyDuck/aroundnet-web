@@ -1,65 +1,126 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import * as React from "react";
+import { useRouter } from "next/navigation";
+import { Plus, Search } from "lucide-react";
+import { listTournaments } from "@/lib/supabase/queries";
+import type { TournamentRow } from "@/lib/types";
+import { isUpcoming } from "@/lib/format";
+import { useAuth } from "@/components/auth-provider";
+import { TournamentCard } from "@/components/tournament-card";
+import { TournamentMap, type MapPoint } from "@/components/tournament-map";
+import { Button } from "@/components/ui/button";
+import { Chip } from "@/components/ui/chip";
+import { Input } from "@/components/ui/input";
+import { CenteredSpinner } from "@/components/ui/spinner";
+
+type Filter = "all" | "upcoming" | "mine";
+
+export default function HomePage() {
+  const { user } = useAuth();
+  const router = useRouter();
+  const [tournaments, setTournaments] = React.useState<TournamentRow[] | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const [query, setQuery] = React.useState("");
+  const [filter, setFilter] = React.useState<Filter>("all");
+
+  React.useEffect(() => {
+    listTournaments()
+      .then(setTournaments)
+      .catch((e) => setError(e.message ?? "Failed to load tournaments"));
+  }, []);
+
+  const filtered = React.useMemo(() => {
+    if (!tournaments) return [];
+    const q = query.trim().toLowerCase();
+    return tournaments.filter((t) => {
+      if (
+        q &&
+        !t.name.toLowerCase().includes(q) &&
+        !(t.location_name ?? "").toLowerCase().includes(q)
+      )
+        return false;
+      if (filter === "upcoming" && !isUpcoming(t.start_date, t.end_date)) return false;
+      if (filter === "mine" && t.created_by !== user?.id) return false;
+      return true;
+    });
+  }, [tournaments, query, filter, user?.id]);
+
+  const points: MapPoint[] = React.useMemo(
+    () =>
+      filtered
+        .filter((t) => t.latitude != null && t.longitude != null)
+        .map((t) => ({ id: t.id, name: t.name, lat: t.latitude!, lng: t.longitude! })),
+    [filtered],
+  );
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div className="mx-auto max-w-6xl px-4 py-6">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold">Tournaments</h1>
+          <p className="text-sm text-text-secondary">Find and run Roundnet tournaments.</p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+        <Button
+          onClick={() => router.push(user ? "/tournament/new/" : "/login/")}
+          className="shrink-0"
+        >
+          <Plus size={18} /> Create
+        </Button>
+      </div>
+
+      <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="relative flex-1">
+          <Search
+            size={16}
+            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary"
+          />
+          <Input
+            className="pl-9"
+            placeholder="Search tournaments or places"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+        <div className="flex gap-2">
+          <Chip selected={filter === "all"} onClick={() => setFilter("all")}>
+            All
+          </Chip>
+          <Chip selected={filter === "upcoming"} onClick={() => setFilter("upcoming")}>
+            Upcoming
+          </Chip>
+          {user && (
+            <Chip selected={filter === "mine"} onClick={() => setFilter("mine")}>
+              My Tournaments
+            </Chip>
+          )}
+        </div>
+      </div>
+
+      {error ? (
+        <p className="mt-10 text-center text-destructive">{error}</p>
+      ) : tournaments === null ? (
+        <CenteredSpinner label="Loading tournaments…" />
+      ) : (
+        <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_1.1fr]">
+          <div className="order-2 space-y-3 lg:order-1">
+            {filtered.length === 0 ? (
+              <p className="rounded-card bg-surface-high p-8 text-center text-text-secondary">
+                No tournaments match your filters.
+              </p>
+            ) : (
+              filtered.map((t) => <TournamentCard key={t.id} t={t} />)
+            )}
+          </div>
+          <div className="order-1 h-[320px] lg:sticky lg:top-20 lg:order-2 lg:h-[calc(100vh-7rem)]">
+            <TournamentMap
+              points={points}
+              onSelect={(id) => router.push(`/tournament/?id=${id}`)}
+              className="h-full w-full overflow-hidden rounded-card border border-divider"
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+          </div>
         </div>
-      </main>
+      )}
     </div>
   );
 }
