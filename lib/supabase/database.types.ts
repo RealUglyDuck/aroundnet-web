@@ -7,10 +7,30 @@ export type Json =
   | Json[]
 
 export type Database = {
-  // Allows to automatically instantiate createClient with right options
-  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
-  __InternalSupabase: {
-    PostgrestVersion: "14.5"
+  graphql_public: {
+    Tables: {
+      [_ in never]: never
+    }
+    Views: {
+      [_ in never]: never
+    }
+    Functions: {
+      graphql: {
+        Args: {
+          extensions?: Json
+          operationName?: string
+          query?: string
+          variables?: Json
+        }
+        Returns: Json
+      }
+    }
+    Enums: {
+      [_ in never]: never
+    }
+    CompositeTypes: {
+      [_ in never]: never
+    }
   }
   public: {
     Tables: {
@@ -970,8 +990,6 @@ export type Database = {
           location_point: unknown
           logo_url: string | null
           longitude: number | null
-          max_team_size: number
-          min_team_size: number
           name: string
           organisation_id: string | null
           registration_close: string | null
@@ -997,8 +1015,6 @@ export type Database = {
           location_point?: unknown
           logo_url?: string | null
           longitude?: number | null
-          max_team_size?: number
-          min_team_size?: number
           name: string
           organisation_id?: string | null
           registration_close?: string | null
@@ -1024,8 +1040,6 @@ export type Database = {
           location_point?: unknown
           logo_url?: string | null
           longitude?: number | null
-          max_team_size?: number
-          min_team_size?: number
           name?: string
           organisation_id?: string | null
           registration_close?: string | null
@@ -2196,6 +2210,9 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
+  graphql_public: {
+    Enums: {},
+  },
   public: {
     Enums: {
       bracket_type: ["single_elimination", "double_elimination"],
@@ -2214,3 +2231,4 @@ export const Constants = {
     },
   },
 } as const
+

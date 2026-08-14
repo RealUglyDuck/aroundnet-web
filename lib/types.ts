@@ -27,6 +27,7 @@ export type MatchStatus = Enums["match_status"];
 export type BracketType = Enums["bracket_type"];
 export type SlotSourceType = Enums["slot_source_type"];
 export type TournamentVisibility = Enums["tournament_visibility"];
+export type OrgRole = Enums["org_role"];
 
 // ── Composed view models (hydrated client-side, mirrors iOS TournamentStore) ──
 export interface MatchVM extends MatchRow {
@@ -71,8 +72,8 @@ export interface StageVM extends StageRow {
 
 export interface DivisionVM extends DivisionRow {
   stages: StageVM[];
-  /** tournament_teams registered into this division, with team names. */
-  teams: (TournamentTeamRow & { teamName: string | null })[];
+  /** tournament_teams registered into this division, with team and player names. */
+  teams: (TournamentTeamRow & { teamName: string | null; playerNames: string[] })[];
 }
 
 export interface TournamentVM extends TournamentRow {

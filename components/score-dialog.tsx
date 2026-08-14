@@ -10,12 +10,16 @@ import type { MatchVM } from "@/lib/types";
 export function ScoreDialog({
   match,
   bestOf,
+  swapped,
   open,
   onOpenChange,
   onSubmitted,
 }: {
   match: MatchVM;
   bestOf: number;
+  /** Card shows the teams the other way round — mirror it so scores can't be
+   *  typed into the wrong side. Submission still keys off the match's own A/B. */
+  swapped?: boolean;
   open: boolean;
   onOpenChange: (v: boolean) => void;
   onSubmitted: () => void;
@@ -38,6 +42,10 @@ export function ScoreDialog({
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => setScores(initial), [initial]);
+
+  const [leftSide, rightSide] = swapped ? (["b", "a"] as const) : (["a", "b"] as const);
+  const leftName = (swapped ? match.teamBName : match.teamAName) ?? "Team A";
+  const rightName = (swapped ? match.teamAName : match.teamBName) ?? "Team B";
 
   function update(i: number, side: "a" | "b", raw: string) {
     const v = raw === "" ? null : Number(raw);
@@ -72,50 +80,83 @@ export function ScoreDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent title="Enter score">
-        <div className="space-y-3">
-          <div className="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-1 text-sm">
-            <span className="font-medium">{match.teamAName ?? "Team A"}</span>
-            <span />
-            <span className="font-medium">{match.teamBName ?? "Team B"}</span>
-            <span />
+        {/* A real form, so Enter from any score box submits — the native
+            behaviour, which also keeps the button working for pointer users. */}
+        <form
+          className="space-y-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!saving) save();
+          }}
+        >
+          {/* Teams side by side, matching the left/right score columns below
+              (and iOS EnterScoreView's header card). */}
+          <div className="flex items-baseline justify-center gap-2 rounded-small bg-surface px-3 py-2.5">
+            <span className="min-w-0 flex-1 truncate text-right font-semibold">{leftName}</span>
+            <span className="shrink-0 text-xs text-text-secondary">vs</span>
+            <span className="min-w-0 flex-1 truncate text-left font-semibold">{rightName}</span>
           </div>
 
           <div className="space-y-2">
-            {scores.map((s, i) => (
-              <div key={i} className="flex items-center gap-3">
-                <span className="w-12 text-xs text-text-secondary">Set {i + 1}</span>
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  min={0}
-                  value={s.a ?? ""}
-                  onChange={(e) => update(i, "a", e.target.value)}
-                  className="w-16 rounded-small border border-divider bg-surface px-2 py-1.5 text-center tabular-nums focus:border-accent/60 focus:outline-none"
-                />
-                <span className="text-text-secondary">–</span>
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  min={0}
-                  value={s.b ?? ""}
-                  onChange={(e) => update(i, "b", e.target.value)}
-                  className="w-16 rounded-small border border-divider bg-surface px-2 py-1.5 text-center tabular-nums focus:border-accent/60 focus:outline-none"
-                />
-              </div>
-            ))}
+            {scores.map((s, i) => {
+              const left = s[leftSide];
+              const right = s[rightSide];
+              const setWinner =
+                left === null || right === null || left === right
+                  ? null
+                  : left > right
+                    ? leftName
+                    : rightName;
+              return (
+                <div key={i} className="flex items-center gap-3">
+                  <span className="w-12 shrink-0 text-xs text-text-secondary">Set {i + 1}</span>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    value={left ?? ""}
+                    onChange={(e) => update(i, leftSide, e.target.value)}
+                    aria-label={`${leftName} score, set ${i + 1}`}
+                    className="w-16 rounded-small border border-divider bg-surface px-2 py-1.5 text-center tabular-nums focus:border-accent/60 focus:outline-none"
+                  />
+                  <span className="text-text-secondary">–</span>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    value={right ?? ""}
+                    onChange={(e) => update(i, rightSide, e.target.value)}
+                    aria-label={`${rightName} score, set ${i + 1}`}
+                    className="w-16 rounded-small border border-divider bg-surface px-2 py-1.5 text-center tabular-nums focus:border-accent/60 focus:outline-none"
+                  />
+                  {/* Names the set winner, so it stays obvious which column is
+                      whose once you scroll past the header. */}
+                  {setWinner && (
+                    <span className="min-w-0 truncate text-xs text-accent">{setWinner}</span>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           {error && <p className="text-sm text-destructive">{error}</p>}
 
           <div className="flex justify-end gap-2 pt-1">
-            <Button variant="secondary" size="sm" onClick={() => onOpenChange(false)}>
+            {/* Explicitly type="button": inside a form an untyped button
+                defaults to submit, which would make Cancel save the score. */}
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={() => onOpenChange(false)}
+            >
               Cancel
             </Button>
-            <Button size="sm" onClick={save} disabled={saving}>
+            <Button type="submit" size="sm" disabled={saving}>
               {saving ? <Spinner /> : "Save score"}
             </Button>
           </div>
-        </div>
+        </form>
       </DialogContent>
     </Dialog>
   );

@@ -11,6 +11,10 @@ import { SCORING_DEFAULTS } from "@/lib/types";
 
 const groupLetter = (i: number) => String.fromCharCode(65 + i);
 
+/** Matches the iOS steppers. Beyond a triple round robin the match count runs
+ *  away: 8 teams already means 28 matches per pass. */
+const MAX_GAMES_PER_PAIR = 3;
+
 export function GroupSetupDialog({
   tournament,
   division,
@@ -35,6 +39,7 @@ export function GroupSetupDialog({
   const [cap, setCap] = React.useState(SCORING_DEFAULTS.hardCap);
   const [bestOf, setBestOf] = React.useState(1);
   const [gpm, setGpm] = React.useState(1);
+  const [stageName, setStageName] = React.useState("Group Stage");
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -55,8 +60,19 @@ export function GroupSetupDialog({
     if (chosen.length < 2) return "Select at least 2 teams.";
     const tooSmall = nonEmpty.find((g) => g.tournament_team_ids.length < 2);
     if (tooSmall) return `${tooSmall.name} needs at least 2 teams.`;
+    // Number("") is 0, and the HTML min/max are only hints a controlled input
+    // ignores — so these are checked here rather than trusted. games_per_matchup
+    // of 0 is the nasty one: the generator's loop never runs and you get a stage
+    // with groups and no matches at all.
+    if (!Number.isInteger(gpm) || gpm < 1 || gpm > MAX_GAMES_PER_PAIR) {
+      return `Games/pair must be between 1 and ${MAX_GAMES_PER_PAIR}.`;
+    }
+    if (!Number.isInteger(ptw) || ptw < 1) return "Points to win must be at least 1.";
+    if (!Number.isInteger(cap) || cap < ptw) {
+      return "Hard cap must be at least the points needed to win.";
+    }
     return null;
-  }, [groups, chosen]);
+  }, [groups, chosen, gpm, ptw, cap]);
 
   async function submit() {
     setSaving(true);
@@ -65,7 +81,7 @@ export function GroupSetupDialog({
       await generateGroupMatches({
         tournament_id: tournament.id,
         division_id: division.id,
-        stage_name: "Group Stage",
+        stage_name: stageName.trim() || "Group Stage",
         points_to_win: ptw,
         hard_cap: cap,
         best_of: bestOf,
@@ -130,6 +146,17 @@ export function GroupSetupDialog({
               </div>
             </div>
 
+            {/* Matches iOS AddStageView, which has always let you name the stage.
+                A tournament can hold more than one group stage, so "Group Stage"
+                twice over is ambiguous. */}
+            <Field label="Stage name">
+              <Input
+                value={stageName}
+                placeholder="Group Stage"
+                onChange={(e) => setStageName(e.target.value)}
+              />
+            </Field>
+
             <div className="grid grid-cols-2 gap-4">
               <Field label="Number of groups">
                 <Input
@@ -163,11 +190,24 @@ export function GroupSetupDialog({
               <Field label="Hard cap">
                 <Input type="number" value={cap} onChange={(e) => setCap(Number(e.target.value))} />
               </Field>
+              {/* Odd only — an even best-of can finish level with no winner,
+                  and nothing downstream can resolve a drawn match. To play a
+                  pair twice, use Games/pair instead. */}
               <Field label="Best of">
-                <Input type="number" min={1} value={bestOf} onChange={(e) => setBestOf(Number(e.target.value))} />
+                <Select value={bestOf} onChange={(e) => setBestOf(Number(e.target.value))}>
+                  <option value={1}>1 game</option>
+                  <option value={3}>Best of 3</option>
+                  <option value={5}>Best of 5</option>
+                </Select>
               </Field>
               <Field label="Games/pair">
-                <Input type="number" min={1} value={gpm} onChange={(e) => setGpm(Number(e.target.value))} />
+                <Input
+                  type="number"
+                  min={1}
+                  max={MAX_GAMES_PER_PAIR}
+                  value={gpm}
+                  onChange={(e) => setGpm(Number(e.target.value))}
+                />
               </Field>
             </div>
 

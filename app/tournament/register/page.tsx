@@ -6,8 +6,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { CheckCircle2, Circle, Plus } from "lucide-react";
 import { useAuth } from "@/components/auth-provider";
 import { useTournament } from "@/lib/hooks/use-tournament";
+import { useTournamentPermissions } from "@/lib/hooks/use-permissions";
 import { loadRegisteredTeams, listMyTeams } from "@/lib/supabase/queries";
 import { registerTeam, setCheckIn } from "@/lib/supabase/mutations";
+import { registrationStatus, registrationLabel } from "@/lib/format";
 import type { RegisteredTeam } from "@/lib/types";
 import { CreateTeamDialog } from "@/components/create-team-dialog";
 import { Card } from "@/components/ui/card";
@@ -22,6 +24,7 @@ function Register() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
   const { tournament, loading } = useTournament(id);
+  const { isOrganiser } = useTournamentPermissions(tournament);
 
   const [teams, setTeams] = React.useState<RegisteredTeam[]>([]);
   const [myTeams, setMyTeams] = React.useState<{ id: string; name: string }[]>([]);
@@ -51,7 +54,10 @@ function Register() {
   if (loading || authLoading) return <CenteredSpinner />;
   if (!tournament) return <p className="py-20 text-center text-destructive">Not found</p>;
 
-  const canManage = !!user && tournament.created_by === user.id;
+  const canManage = isOrganiser;
+  // Non-organisers can only register while the window is open (mirrors RLS).
+  const registrationClosedForUser =
+    registrationStatus(tournament) !== "open" && !isOrganiser;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -107,6 +113,10 @@ function Register() {
               Sign in
             </Button>
           </div>
+        ) : registrationClosedForUser ? (
+          <p className="text-center text-sm text-text-secondary">
+            {registrationLabel(tournament) ?? "Registration is closed."}
+          </p>
         ) : myTeams.length === 0 ? (
           <div className="text-center">
             <p className="text-sm text-text-secondary">

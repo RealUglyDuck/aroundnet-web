@@ -25,8 +25,8 @@ export interface CreateTournamentInput {
   registration_open?: string | null;
   registration_close?: string | null;
   team_limit?: number | null;
-  min_team_size?: number;
-  max_team_size?: number;
+  // No team size here on purpose — roster size is a property of the division
+  // (Open might be pairs, a Mixed division a trio), so it lives only there.
 }
 
 export async function createTournament(
@@ -51,8 +51,6 @@ export async function createTournament(
       registration_open: input.registration_open ?? null,
       registration_close: input.registration_close ?? null,
       team_limit: input.team_limit ?? null,
-      min_team_size: input.min_team_size ?? 2,
-      max_team_size: input.max_team_size ?? 2,
       created_by: userId,
     })
     .select("id")
@@ -116,6 +114,28 @@ export async function addTeamMember(teamId: string, playerId: string) {
   if (error) throw error;
 }
 
+// ── Own profile ──────────────────────────────────────────────────────────────
+/**
+ * Rename yourself. Guarded by "Players: users can update own profile"
+ * (`using (id = auth.uid())`, reused as the check since there is no WITH CHECK),
+ * so this can only ever touch your own row.
+ *
+ * Deliberately does NOT write display_name: it is GENERATED ALWAYS from these two
+ * columns, so Postgres rejects any attempt to set it — and leaving it alone is
+ * what makes a rename show up instantly in rosters, member lists and search.
+ */
+export async function updatePlayerName(
+  userId: string,
+  firstName: string,
+  lastName: string,
+) {
+  const { error } = await supabase
+    .from("players")
+    .update({ first_name: firstName.trim(), last_name: lastName.trim() })
+    .eq("id", userId);
+  if (error) throw error;
+}
+
 // ── Organisations ────────────────────────────────────────────────────────────
 /** Create an organisation and add the creator as owner (mirrors iOS createOrganisation). */
 export async function createOrganisation(
@@ -134,6 +154,32 @@ export async function createOrganisation(
     .insert({ organisation_id: org.id, player_id: userId, role: "owner" });
   if (memberErr) throw memberErr;
   return org.id;
+}
+
+/**
+ * Add someone to an organisation as a plain member, matching iOS's
+ * addMember(role: .member).
+ *
+ * Only callable once the caller is already an owner/admin of the org: the
+ * "Org members: owners/admins can manage" policy reads is_org_admin(), which in
+ * turn reads organisation_members. Straight after createOrganisation that is
+ * satisfied by the owner row it just inserted — so this must run after it, never
+ * alongside it.
+ */
+export async function addOrganisationMember(organisationId: string, playerId: string) {
+  const { error } = await supabase
+    .from("organisation_members")
+    .insert({ organisation_id: organisationId, player_id: playerId, role: "member" });
+  if (error) throw error;
+}
+
+/** Remove a membership by its own row id. */
+export async function removeOrganisationMember(memberRowId: string) {
+  const { error } = await supabase
+    .from("organisation_members")
+    .delete()
+    .eq("id", memberRowId);
+  if (error) throw error;
 }
 
 // ── Registration ─────────────────────────────────────────────────────────────

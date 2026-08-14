@@ -13,9 +13,11 @@ export const SUPABASE_ANON_KEY =
 
 /**
  * Singleton browser client (persists the session in localStorage).
- * Implicit flow (not PKCE) suits a static SPA: sign-in works either via a typed
- * email OTP code (verifyOtp) OR by clicking the emailed link, which redirects
- * back with the session tokens in the URL hash — detectSessionInUrl parses them.
+ *
+ * Sign-in is email + password. Implicit flow (not PKCE) suits a static SPA and is
+ * still needed for the two emailed links — confirm-your-address and
+ * password-recovery — which come back with the session tokens in the URL hash for
+ * detectSessionInUrl to parse.
  */
 export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {

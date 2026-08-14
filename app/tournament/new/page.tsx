@@ -83,8 +83,10 @@ export default function CreateTournamentPage() {
           latitude: location.lat,
           longitude: location.lng,
           registration_enabled: registrationEnabled,
-          registration_open: regOpen || null,
-          registration_close: regClose || null,
+          // datetime-local is naive local wall-clock; convert to UTC ISO so the
+          // stored timestamptz matches the organiser's intended local time.
+          registration_open: regOpen ? new Date(regOpen).toISOString() : null,
+          registration_close: regClose ? new Date(regClose).toISOString() : null,
           team_limit: teamLimit ? Number(teamLimit) : null,
         },
         user.id,
@@ -200,7 +202,9 @@ export default function CreateTournamentPage() {
         {step === 1 && (
           <div className="space-y-3">
             <p className="text-sm text-text-secondary">
-              Divisions group teams (e.g. Open, Women&apos;s, Mixed).
+              Divisions group teams (e.g. Open, Women&apos;s, Mixed). Roster size is set
+              per division — 2 to 2 for standard pairs, or a range like 2 to 4 to allow
+              substitutes.
             </p>
             {divisions.map((d, i) => (
               <div key={i} className="flex items-end gap-2 rounded-small border border-divider p-3">
@@ -209,20 +213,22 @@ export default function CreateTournamentPage() {
                     <Input value={d.name} onChange={(e) => updateDivision(i, { name: e.target.value })} />
                   </Field>
                 </div>
-                <Field label="Min">
+                <Field label="Min players">
                   <Input
                     type="number"
                     min={1}
-                    className="w-16"
+                    className="w-20"
+                    title="Fewest players a team may register in this division"
                     value={d.minSize}
                     onChange={(e) => updateDivision(i, { minSize: Number(e.target.value) })}
                   />
                 </Field>
-                <Field label="Max">
+                <Field label="Max players">
                   <Input
                     type="number"
                     min={1}
-                    className="w-16"
+                    className="w-20"
+                    title="Most players a team may register in this division"
                     value={d.maxSize}
                     onChange={(e) => updateDivision(i, { maxSize: Number(e.target.value) })}
                   />

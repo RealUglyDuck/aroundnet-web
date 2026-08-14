@@ -26,9 +26,10 @@ jobs:
       - run: npm ci
       - name: Build static export
         env:
-          # Project (GitHub Pages) sites serve under /<repo>. Change if you use a
-          # custom domain or a <user>.github.io root repo (then set to "").
-          NEXT_PUBLIC_BASE_PATH: /aroundnet-web
+          # Served at the apex custom domain (aroundnet.co.uk, via public/CNAME),
+          # so the site is at the root — no basePath. (Use /aroundnet-web only if
+          # serving from the <user>.github.io/<repo> project URL instead.)
+          NEXT_PUBLIC_BASE_PATH: ""
         run: npm run build
       - name: SPA fallback + disable Jekyll
         run: |

@@ -13,6 +13,7 @@ import type {
   GroupTeamRow,
   StandingRow,
   TournamentTeamRow,
+  OrgRole,
 } from "../types";
 import { sortStandings } from "../types";
 
@@ -29,6 +30,97 @@ export async function listTournaments(): Promise<TournamentRow[]> {
     .order("start_date", { ascending: true, nullsFirst: false });
   if (error) throw error;
   return data ?? [];
+}
+
+/**
+ * Player names per tournament_team, for the roster line under each team.
+ *
+ * Two sources, because `tournament_team_roster` is the per-tournament line-up
+ * but is often left empty — the same reason is_match_player falls back to
+ * team_members (see 20260728000000_widen_score_permissions.sql). Roster wins
+ * where it exists; otherwise the team's current members are used.
+ *
+ * `players` is readable only by signed-in users ("Players: authenticated users
+ * can read"), so this comes back empty for a signed-out visitor and the roster
+ * line is simply omitted rather than breaking the page.
+ */
+async function loadRosters(
+  tournamentTeams: { id: string; team_id: string }[],
+  teamIds: string[],
+): Promise<Map<string, string[]>> {
+  const byTt = new Map<string, string[]>();
+  if (!tournamentTeams.length) return byTt;
+
+  const ttIds = tournamentTeams.map((tt) => tt.id);
+  const [rosterRes, membersRes] = await Promise.all([
+    supabase
+      .from("tournament_team_roster")
+      .select("tournament_team_id, player_id")
+      .in("tournament_team_id", ttIds),
+    teamIds.length
+      ? supabase
+          .from("team_members")
+          .select("team_id, player_id, is_captain")
+          .in("team_id", teamIds)
+          .is("left_at", null)
+      : Promise.resolve({ data: [] as TeamMemberLite[] }),
+  ]);
+
+  const roster = (rosterRes.data ?? []) as RosterLite[];
+  const members = (membersRes.data ?? []) as TeamMemberLite[];
+
+  const playerIds = [
+    ...new Set([...roster.map((r) => r.player_id), ...members.map((m) => m.player_id)]),
+  ];
+  if (!playerIds.length) return byTt;
+
+  const { data: players } = await supabase
+    .from("players")
+    .select("id, display_name, first_name, last_name")
+    .in("id", playerIds);
+
+  // Signed out: RLS hides players entirely, so there is nothing to show.
+  if (!players?.length) return byTt;
+
+  const nameById = new Map(
+    players.map((p) => [
+      p.id,
+      (p.display_name ?? `${p.first_name ?? ""} ${p.last_name ?? ""}`).trim(),
+    ]),
+  );
+
+  const rosterByTt = groupBy(roster, (r) => r.tournament_team_id);
+  // Captains first, then alphabetical — a stable, readable order.
+  const membersByTeam = groupBy(
+    [...members].sort(
+      (a, b) =>
+        Number(b.is_captain) - Number(a.is_captain) ||
+        (nameById.get(a.player_id) ?? "").localeCompare(nameById.get(b.player_id) ?? ""),
+    ),
+    (m) => m.team_id,
+  );
+
+  for (const tt of tournamentTeams) {
+    const fromRoster = rosterByTt.get(tt.id) ?? [];
+    const ids = fromRoster.length
+      ? fromRoster.map((r) => r.player_id)
+      : (membersByTeam.get(tt.team_id) ?? []).map((m) => m.player_id);
+    const names = ids.map((id) => nameById.get(id)).filter((n): n is string => !!n && n !== "");
+    if (names.length) byTt.set(tt.id, names);
+  }
+
+  return byTt;
+}
+
+interface RosterLite {
+  tournament_team_id: string;
+  player_id: string;
+}
+
+interface TeamMemberLite {
+  team_id: string;
+  player_id: string;
+  is_captain: boolean;
 }
 
 // ── Full tournament tree ─────────────────────────────────────────────────────
@@ -59,6 +151,8 @@ export async function loadTournament(id: string): Promise<TournamentVM | null> {
   const ttNameById = new Map(
     (tournamentTeams ?? []).map((tt) => [tt.id, teamNameById.get(tt.team_id) ?? null]),
   );
+
+  const playerNamesByTt = await loadRosters(tournamentTeams ?? [], teamIds);
 
   // Stage children.
   const [groupsRes, bracketsRes, groupMatchesRes, bracketMatchesRes] = await Promise.all([
@@ -183,7 +277,11 @@ export async function loadTournament(id: string): Promise<TournamentVM | null> {
     stages: stageVMs.filter((s) => s.division_id === d.id),
     teams: (tournamentTeams ?? [])
       .filter((tt) => tt.division_id === d.id)
-      .map((tt) => ({ ...(tt as TournamentTeamRow), teamName: ttNameById.get(tt.id) ?? null })),
+      .map((tt) => ({
+        ...(tt as TournamentTeamRow),
+        teamName: ttNameById.get(tt.id) ?? null,
+        playerNames: playerNamesByTt.get(tt.id) ?? [],
+      })),
   }));
 
   const organizerName = await resolveOrganizerName(tournament);
@@ -341,21 +439,92 @@ export async function loadMyTournamentTeamIds(
 }
 
 // ── Organisations for the current user (organiser selection) ─────────────────
+/**
+ * Organisations the user belongs to, with the role they hold in each — the role
+ * comes free from the membership rows this already reads, and is what decides
+ * whether they may manage the member list.
+ */
 export async function listOrganisationsForUser(
   userId: string,
-): Promise<{ id: string; name: string }[]> {
+): Promise<{ id: string; name: string; role: OrgRole }[]> {
   const { data: memberships } = await supabase
     .from("organisation_members")
-    .select("organisation_id")
+    .select("organisation_id, role")
     .eq("player_id", userId);
-  const ids = (memberships ?? []).map((m) => m.organisation_id);
-  if (!ids.length) return [];
+  const roleByOrg = new Map((memberships ?? []).map((m) => [m.organisation_id, m.role]));
+  if (!roleByOrg.size) return [];
   const { data } = await supabase
     .from("organisations")
     .select("id, name")
-    .in("id", ids)
+    .in("id", [...roleByOrg.keys()])
     .order("name");
-  return data ?? [];
+  return (data ?? []).map((o) => ({ ...o, role: roleByOrg.get(o.id) ?? "member" }));
+}
+
+// ── The signed-in user's own player row ──────────────────────────────────────
+/**
+ * `maybeSingle` rather than `single`: the row is created by the
+ * on_auth_user_created trigger, so its absence means "not ready yet", not an error.
+ */
+export async function fetchPlayer(userId: string): Promise<{
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string | null;
+} | null> {
+  const { data, error } = await supabase
+    .from("players")
+    .select("id, first_name, last_name, email")
+    .eq("id", userId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  return {
+    id: data.id,
+    firstName: data.first_name ?? "",
+    lastName: data.last_name ?? "",
+    email: data.email,
+  };
+}
+
+export interface OrganisationMember {
+  /** organisation_members.id — what a removal deletes by. */
+  id: string;
+  playerId: string;
+  name: string;
+  city: string | null;
+  role: OrgRole;
+}
+
+/** Members of an organisation, mirroring iOS SupabaseOrganisationService.fetchMembers. */
+export async function fetchOrganisationMembers(
+  organisationId: string,
+): Promise<OrganisationMember[]> {
+  const { data, error } = await supabase
+    .from("organisation_members")
+    .select("id, player_id, role, players(display_name, first_name, last_name, city)")
+    .eq("organisation_id", organisationId)
+    .order("joined_at");
+  if (error) throw error;
+
+  return (data ?? []).map((m) => {
+    // `players` is authenticated-only, so it can come back null for a signed-out
+    // reader even though the membership row itself is world-readable.
+    const p = m.players as {
+      display_name: string | null;
+      first_name: string | null;
+      last_name: string | null;
+      city: string | null;
+    } | null;
+    return {
+      id: m.id,
+      playerId: m.player_id,
+      role: m.role,
+      city: p?.city ?? null,
+      name:
+        p?.display_name || `${p?.first_name ?? ""} ${p?.last_name ?? ""}`.trim() || "Player",
+    };
+  });
 }
 
 // ── internal ─────────────────────────────────────────────────────────────────

@@ -3,7 +3,18 @@
 import * as React from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { CalendarDays, MapPin, Navigation, Pencil, Trophy, UserPlus } from "lucide-react";
+import {
+  CalendarDays,
+  CalendarMinus,
+  CalendarPlus,
+  MapPin,
+  Navigation,
+  Pencil,
+  Plus,
+  Trophy,
+  UserPlus,
+  Users,
+} from "lucide-react";
 import { useTournament } from "@/lib/hooks/use-tournament";
 import { useTournamentPermissions } from "@/lib/hooks/use-permissions";
 import { Card } from "@/components/ui/card";
@@ -11,16 +22,17 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { CenteredSpinner } from "@/components/ui/spinner";
-import { DivisionStages } from "@/components/division-stages";
 import { DivisionTeamsPanel } from "@/components/division-teams-panel";
-import type { DivisionVM, MatchVM } from "@/lib/types";
-import { formatDateRange } from "@/lib/format";
+import { AddDivisionDialog } from "@/components/add-division-dialog";
+import type { TournamentVM } from "@/lib/types";
+import { formatDateRange, formatDateTime, registrationStatus } from "@/lib/format";
 
 function TournamentDetail() {
   const params = useSearchParams();
   const id = params.get("id");
   const { tournament, loading, error, reload } = useTournament(id);
-  const { isOrganiser, canEditMatch } = useTournamentPermissions(tournament);
+  const { isOrganiser } = useTournamentPermissions(tournament);
+  const [addDivisionOpen, setAddDivisionOpen] = React.useState(false);
 
   if (loading) return <CenteredSpinner label="Loading tournament…" />;
   if (error || !tournament)
@@ -72,13 +84,8 @@ function TournamentDetail() {
               <Trophy size={16} /> Tournament Day
             </Button>
           </Link>
-          {tournament.registration_enabled && (
-            <Link href={`/tournament/register/?id=${tournament.id}`}>
-              <Button size="sm" variant="secondary">
-                <UserPlus size={16} /> Register team
-              </Button>
-            </Link>
-          )}
+          {/* Register team lives in the Registration card below, next to the
+              window and capacity you'd weigh before entering. */}
           {tournament.latitude != null && tournament.longitude != null && (
             <a
               href={`https://www.google.com/maps/search/?api=1&query=${tournament.latitude},${tournament.longitude}`}
@@ -100,6 +107,11 @@ function TournamentDetail() {
         </div>
       </Card>
 
+      {/* Above About: this now carries the Register action, and an entrant
+          shouldn't have to scroll past the description to find it. Matches the
+          iOS order, where registration sits directly under Tournament Day. */}
+      <RegistrationCard tournament={tournament} showWhenOff={canEdit} />
+
       {tournament.description && (
         <Card className="mt-4 p-5">
           <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-text-secondary">
@@ -109,22 +121,28 @@ function TournamentDetail() {
         </Card>
       )}
 
-      {/* Divisions */}
+      {/* Divisions — who is registered. Groups, brackets, standings and score
+          entry deliberately live on Tournament Day, not here. */}
       <div className="mt-6">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-text-secondary">
+            Divisions
+          </h2>
+          {canEdit && (
+            <Button size="sm" variant="secondary" onClick={() => setAddDivisionOpen(true)}>
+              <Plus size={15} /> Add division
+            </Button>
+          )}
+        </div>
+
         {divisions.length === 0 ? (
           <p className="rounded-card bg-surface-high p-6 text-center text-sm text-text-secondary">
-            No divisions yet.
+            {canEdit
+              ? "No divisions yet — add one to open the tournament for registration."
+              : "No divisions yet."}
           </p>
         ) : divisions.length === 1 ? (
-          <>
-            <h2 className="mb-3 text-lg font-semibold">
-              {divisions[0].name}
-              <span className="ml-2 text-sm font-normal text-text-secondary">
-                {divisions[0].teams.length} teams
-              </span>
-            </h2>
-            <DivisionLayout division={divisions[0]} tournamentId={tournament.id} showRegister={tournament.registration_enabled} reload={reload} canEditMatch={canEditMatch} />
-          </>
+          <DivisionTeamsPanel division={divisions[0]} title={divisions[0].name} />
         ) : (
           <Tabs defaultValue={divisions[0].id}>
             <TabsList className="mb-4 flex-wrap">
@@ -139,42 +157,113 @@ function TournamentDetail() {
             </TabsList>
             {divisions.map((d) => (
               <TabsContent key={d.id} value={d.id}>
-                <DivisionLayout division={d} tournamentId={tournament.id} showRegister={tournament.registration_enabled} reload={reload} canEditMatch={canEditMatch} />
+                <DivisionTeamsPanel division={d} />
               </TabsContent>
             ))}
           </Tabs>
         )}
       </div>
+
+      {canEdit && (
+        <AddDivisionDialog
+          tournament={tournament}
+          open={addDivisionOpen}
+          onOpenChange={setAddDivisionOpen}
+          onDone={reload}
+        />
+      )}
     </div>
   );
 }
 
-function DivisionLayout({
-  division,
-  tournamentId,
-  showRegister,
-  reload,
-  canEditMatch,
+const REGISTRATION_TONE = {
+  open: "success",
+  not_yet: "accent",
+  closed: "neutral",
+  disabled: "neutral",
+} as const;
+
+const REGISTRATION_TEXT = {
+  open: "Open now",
+  not_yet: "Not open yet",
+  closed: "Closed",
+  disabled: "Not accepting teams",
+} as const;
+
+/**
+ * The registration window. Hidden entirely when registration is switched off,
+ * since it is then just noise — except for organisers (`showWhenOff`), who need
+ * to see that it is off in order to go and turn it on.
+ */
+function RegistrationCard({
+  tournament,
+  showWhenOff,
 }: {
-  division: DivisionVM;
-  tournamentId: string;
-  showRegister: boolean;
-  reload: () => void;
-  canEditMatch: (match: MatchVM) => boolean;
+  tournament: TournamentVM;
+  showWhenOff: boolean;
 }) {
+  const status = registrationStatus(tournament);
+  if (status === "disabled" && !showWhenOff) return null;
+
+  const opens = tournament.registration_open;
+  const closes = tournament.registration_close;
+  const registeredTeams = tournament.divisions.reduce((n, d) => n + d.teams.length, 0);
+
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
-      <div className="min-w-0">
-        <DivisionStages division={division} canEditMatch={canEditMatch} onSubmitted={reload} />
+    <Card className="mt-4 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-text-secondary">
+          Registration
+        </h2>
+        <Badge tone={REGISTRATION_TONE[status]}>{REGISTRATION_TEXT[status]}</Badge>
       </div>
-      <div className="lg:sticky lg:top-20 lg:self-start">
-        <DivisionTeamsPanel
-          division={division}
-          tournamentId={tournamentId}
-          showRegister={showRegister}
-        />
-      </div>
-    </div>
+
+      {status === "disabled" ? (
+        <p className="mt-3 text-sm text-text-secondary">
+          Teams can&apos;t register yet. Turn it on under Edit to open sign-ups.
+        </p>
+      ) : (
+        <>
+          <dl className="mt-3 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+            <div className="flex items-center justify-between gap-3 sm:justify-start sm:gap-2">
+              <dt className="flex items-center gap-1.5 text-text-secondary">
+                <CalendarPlus size={15} /> Opens
+              </dt>
+              <dd>{opens ? formatDateTime(opens) : "Already open"}</dd>
+            </div>
+            <div className="flex items-center justify-between gap-3 sm:justify-start sm:gap-2">
+              <dt className="flex items-center gap-1.5 text-text-secondary">
+                <CalendarMinus size={15} /> Closes
+              </dt>
+              <dd>{closes ? formatDateTime(closes) : "No closing date"}</dd>
+            </div>
+            <div className="flex items-center justify-between gap-3 sm:justify-start sm:gap-2">
+              <dt className="flex items-center gap-1.5 text-text-secondary">
+                <Users size={15} /> Teams
+              </dt>
+              <dd>
+                {registeredTeams}
+                {tournament.team_limit != null && ` of ${tournament.team_limit}`} registered
+              </dd>
+            </div>
+          </dl>
+
+          {/* Only in the `open` state — the same predicate that gates the
+              tournament_teams RLS policy, so the button never offers something
+              the database will reject. */}
+          {status === "open" && (
+            <Link
+              href={`/tournament/register/?id=${tournament.id}`}
+              className="mt-4 block"
+            >
+              <Button size="sm">
+                <UserPlus size={16} /> Register team
+              </Button>
+            </Link>
+          )}
+        </>
+      )}
+    </Card>
   );
 }
 

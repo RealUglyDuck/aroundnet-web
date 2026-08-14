@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth-provider";
 import { useTournament } from "@/lib/hooks/use-tournament";
 import { updateTournament } from "@/lib/supabase/mutations";
+import { toDatetimeLocal, fromDatetimeLocal } from "@/lib/format";
 import type { TournamentVisibility } from "@/lib/types";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -26,6 +27,8 @@ function EditTournament() {
     end_date: string;
     location_name: string;
     registration_enabled: boolean;
+    registration_open: string;
+    registration_close: string;
   } | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -40,6 +43,8 @@ function EditTournament() {
         end_date: tournament.end_date?.slice(0, 10) ?? "",
         location_name: tournament.location_name ?? "",
         registration_enabled: tournament.registration_enabled,
+        registration_open: toDatetimeLocal(tournament.registration_open),
+        registration_close: toDatetimeLocal(tournament.registration_close),
       });
     }
   }, [tournament, form]);
@@ -62,6 +67,12 @@ function EditTournament() {
         end_date: form.end_date || null,
         location_name: form.location_name.trim() || null,
         registration_enabled: form.registration_enabled,
+        registration_open: form.registration_enabled
+          ? fromDatetimeLocal(form.registration_open)
+          : null,
+        registration_close: form.registration_enabled
+          ? fromDatetimeLocal(form.registration_close)
+          : null,
       });
       router.replace(`/tournament/?id=${tournament!.id}`);
     } catch (e) {
@@ -121,15 +132,47 @@ function EditTournament() {
             <option value="private">Private</option>
           </Select>
         </Field>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={form.registration_enabled}
-            onChange={(e) => set({ registration_enabled: e.target.checked })}
-            className="accent-[var(--color-accent)]"
-          />
-          Registration enabled
-        </label>
+        <div className="space-y-3 rounded-small border border-divider p-4">
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <input
+              type="checkbox"
+              checked={form.registration_enabled}
+              onChange={(e) => set({ registration_enabled: e.target.checked })}
+              className="accent-[var(--color-accent)]"
+            />
+            Allow team registration
+          </label>
+          <p className="text-xs text-text-secondary">
+            When on, team captains can register their teams. Leave the dates empty to
+            keep registration open indefinitely, or set a window below.
+          </p>
+          {form.registration_enabled && (
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Registration opens" hint="Optional">
+                <Input
+                  type="datetime-local"
+                  value={form.registration_open}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    set(
+                      v && form.registration_close && form.registration_close < v
+                        ? { registration_open: v, registration_close: v }
+                        : { registration_open: v },
+                    );
+                  }}
+                />
+              </Field>
+              <Field label="Registration closes" hint="Optional">
+                <Input
+                  type="datetime-local"
+                  value={form.registration_close}
+                  min={form.registration_open || undefined}
+                  onChange={(e) => set({ registration_close: e.target.value })}
+                />
+              </Field>
+            </div>
+          )}
+        </div>
         {error && <p className="text-sm text-destructive">{error}</p>}
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={() => router.back()} disabled={saving}>
