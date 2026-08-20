@@ -10,6 +10,9 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
+    // lib/reframe/solve.test.ts runs directly under `node --experimental-strip-types`,
+    // which requires explicit .ts extensions on its imports.
+    "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "jsx": "react-jsx",
     "incremental": true,
