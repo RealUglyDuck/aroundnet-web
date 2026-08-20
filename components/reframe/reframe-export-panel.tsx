@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/input";
 import {
   TARGET_PRESETS,
+  totalSegmentDuration,
   type ReframeDoc,
   type TargetPresetKey,
 } from "@/lib/reframe/model";
@@ -17,7 +18,7 @@ import {
   type ExportProgress,
   type ExportQuality,
 } from "@/lib/reframe/export";
-import { formatBytes } from "@/lib/reframe/format";
+import { formatBytes, formatTimecode } from "@/lib/reframe/format";
 
 interface Props {
   doc: ReframeDoc;
@@ -38,11 +39,12 @@ const STAGE_LABELS: Record<ExportProgress["stage"], string> = {
   finalizing: "Finalising file",
 };
 
-export function ReframeExportPanel({ doc, file, onSetTarget }: Props) {
+function ReframeExportPanelInner({ doc, file, onSetTarget }: Props) {
   const [quality, setQuality] = React.useState<ExportQuality>("high");
   const [includeAudio, setIncludeAudio] = React.useState(true);
   const [progress, setProgress] = React.useState<ExportProgress | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [notice, setNotice] = React.useState<string | null>(null);
   const [result, setResult] = React.useState<{ url: string; name: string; size: number } | null>(
     null,
   );
@@ -74,7 +76,14 @@ export function ReframeExportPanel({ doc, file, onSetTarget }: Props) {
   const run = async () => {
     setError(null);
     setResult(null);
-    setProgress({ fraction: 0, framesRendered: 0, stage: "video" });
+    setNotice(null);
+    setProgress({
+      fraction: 0,
+      framesRendered: 0,
+      stage: "video",
+      segmentIndex: 1,
+      segmentCount: Math.max(1, doc.segments.length),
+    });
     const controller = new AbortController();
     abortRef.current = controller;
     try {
@@ -85,6 +94,7 @@ export function ReframeExportPanel({ doc, file, onSetTarget }: Props) {
         includeAudio,
         signal: controller.signal,
         onProgress: setProgress,
+        onNotice: setNotice,
       });
       setResult({
         url: URL.createObjectURL(blob),
@@ -103,6 +113,8 @@ export function ReframeExportPanel({ doc, file, onSetTarget }: Props) {
 
   const busy = progress !== null;
   const disabled = busy || support?.ok === false || doc.keyframes.length === 0;
+  const isReel = doc.segments.length > 1;
+  const kept = doc.segments.length > 0 ? totalSegmentDuration(doc) : doc.source.duration;
 
   return (
     <div className="space-y-3">
@@ -166,7 +178,13 @@ export function ReframeExportPanel({ doc, file, onSetTarget }: Props) {
           </div>
           <div className="flex items-center justify-between text-xs text-text-secondary">
             <span>
-              {STAGE_LABELS[progress.stage]} · {progress.framesRendered} frames
+              {progress.stage === "audio" && isReel
+                ? "Stitching audio"
+                : STAGE_LABELS[progress.stage]}
+              {progress.segmentCount > 1 && progress.stage === "video"
+                ? ` · segment ${progress.segmentIndex}/${progress.segmentCount}`
+                : ""}{" "}
+              · {progress.framesRendered} frames
             </span>
             <button
               type="button"
@@ -179,7 +197,9 @@ export function ReframeExportPanel({ doc, file, onSetTarget }: Props) {
         </div>
       ) : (
         <Button fullWidth onClick={run} disabled={disabled}>
-          Export {doc.target.width}×{doc.target.height} MP4
+          {isReel
+            ? `Export reel · ${doc.segments.length} segments · ${formatTimecode(kept)}`
+            : `Export ${doc.target.width}×${doc.target.height} MP4`}
         </Button>
       )}
 
@@ -189,6 +209,7 @@ export function ReframeExportPanel({ doc, file, onSetTarget }: Props) {
       {support?.ok === false && (
         <p className="text-xs text-warning">{support.reason}</p>
       )}
+      {notice && <p className="text-xs text-warning">{notice}</p>}
       {error && <p className="text-xs text-destructive">{error}</p>}
 
       {result && (
@@ -212,3 +233,8 @@ export function ReframeExportPanel({ doc, file, onSetTarget }: Props) {
     </div>
   );
 }
+
+// The editor re-renders on every playhead tick while scrubbing or playing.
+// Nothing here depends on the playhead, so memoising keeps that work off the
+// drag path entirely.
+export const ReframeExportPanel = React.memo(ReframeExportPanelInner);

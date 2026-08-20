@@ -26,6 +26,11 @@ purpose. Port those two files and you have a compatible implementation.
     { "id": "kf1_ab3xz", "t": 0.0,  "cx": 0.31, "cy": 0.5, "zoom": 1, "easing": "easeInOut" },
     { "id": "kf2_9qm2p", "t": 3.5,  "cx": 0.72, "cy": 0.5, "zoom": 1, "easing": "hold" },
     { "id": "kf3_k1w8d", "t": 6.0,  "cx": 0.72, "cy": 0.5, "zoom": 1.4, "easing": "linear" }
+  ],
+  // Optional. Absent or empty means "the whole clip".
+  "segments": [
+    { "id": "seg1_p0q2r", "name": "Point 1", "start": 0.0,  "end": 7.2 },
+    { "id": "seg2_z8m4t", "name": "Point 2", "start": 31.5, "end": 39.0 }
   ]
 }
 ```
@@ -37,6 +42,23 @@ purpose. Port those two files and you have a compatible implementation.
 | `zoom` | `1` = the largest target-aspect rect that fits in the source. `2` = a 2× punch-in. Always ≥ 1. |
 | `easing` | Governs the segment **from this keyframe to the next**. The last keyframe's easing is meaningless. |
 | `id` | Editor-local only. Not meaningful across documents; regenerate freely. |
+| `segments[]` | The parts of the source worth keeping, sorted by `start` and never overlapping. Seconds, half-open `[start, end)`. |
+
+### Segments
+
+An empty or missing `segments` array means "the whole clip", which is exactly
+how every document written before segments existed deserialises — so the format
+stayed at `version: 1` rather than becoming a breaking change.
+
+Two boundary rules that look inconsistent but are not:
+
+- **Playback membership is strictly half-open**, `[start, end)`. This is what
+  keeps segments disjoint, so "play segments only" always has one unambiguous
+  answer for where to go next.
+- **Keyframe membership is fuzzy by half a frame at both ends.** A keyframe
+  placed on the very frame the out-point was marked on must belong to that
+  segment. The side effect — a keyframe on a shared boundary governing both
+  neighbours — is correct: it holds the framing on both sides of the cut.
 
 `easing` is one of:
 
@@ -71,6 +93,28 @@ motion only becomes possible once you zoom in.
 is held — so one keyframe means a static crop, and zero keyframes means dead
 centre.
 
+When `t` falls inside a segment, only *that segment's* keyframes take part.
+Each kept point is framed independently: its first frame sits exactly on its
+own first keyframe rather than drifting in from a keyframe that may be minutes
+away in the source. In a document with no segments the whole keyframe array
+participates, which is the original behaviour. A segment with no keyframes of
+its own also falls back to the whole array, so an unframed segment inherits the
+surrounding framing instead of snapping to dead centre.
+
+**A gap belongs to the segment before it** — the governing range runs from that
+segment's start up to, but not into, the next one. So the framing of the
+segment being *left* is held across the gap, while a keyframe dropped in the
+gap still governs its own time. Gap frames never reach the export, so
+this only affects the live preview — but it matters there twice over. First, a "play segments only" skip sets `currentTime` asynchronously, so for a
+frame or two the playhead sits past the outgoing segment while the picture is
+still its last frame. Interpolating globally in that window dragged the crop
+onto the *incoming* segment's framing while the old picture was still on
+screen, which read as the frame jumping one frame before the cut. Holding the
+outgoing segment keeps those frames stable, so the framing changes exactly when
+the picture does. Second, clicking the video while the playhead sits in an
+unmarked stretch has to visibly move the frame — scoping a gap to the previous
+segment's keyframes *alone* silently discarded that click.
+
 ```
 u = (t - a.t) / (b.t - a.t)
 e = ease(a.easing, u)
@@ -104,6 +148,15 @@ y = cy * source.height - cropHeight / 2
 ## Porting to Swift (ARoundNet)
 
 ### The model
+
+The iOS app's existing `VideoSegment` stores **normalised** bounds
+(`startNormalised` / `endNormalised`), while this format uses **seconds**. That
+is deliberate, not an oversight: keyframe `t` is in seconds and the solver
+compares `seg.start <= kf.t` on every single solve, so a normalised segment
+would need a multiply by duration at each comparison — precisely the kind of
+unit mismatch that lets the TS and Swift implementations diverge silently.
+Convert at the boundary instead; `toNormalisedSegment` / `fromNormalisedSegment`
+in `model.ts` are the reference implementations.
 
 `ReframeDoc` maps to `Codable` structs one-to-one. `easing` becomes a
 `String`-backed enum. Everything else is `Double`.
@@ -194,5 +247,12 @@ a CoreImage round-trip per frame on older devices.
 - The whole output is buffered in memory (`BufferTarget` + `fastStart:
   'in-memory'`). Fine for clips; a feature-length source would want a
   `StreamTarget` writing to the File System Access API instead.
+- With more than one segment the export is a **reel**: the ranges are rendered
+  end to end into one file, each join forced to a key frame because a P-frame
+  across a cut smears.
+- Reel **audio is decoded and re-encoded**, not copied. AAC packets are ~21ms
+  and do not align to segment boundaries, and an encoded packet can be re-timed
+  but not shortened — the leftover fractional packet at each join is an audible
+  click. A single contiguous range still takes the free packet-copy path.
 - Needs WebCodecs: Chrome, Edge, or Safari 16.4+. `checkExportSupport()` probes
   for it and the export panel disables itself with a reason when it is missing.

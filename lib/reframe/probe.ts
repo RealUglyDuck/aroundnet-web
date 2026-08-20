@@ -41,7 +41,23 @@ export async function probeVideo(file: File): Promise<ReframeSource> {
       // Frame rate is a nicety (frame-step size, export hint) — not fatal.
     }
 
-    return { width, height, duration, name: file.name, frameRate };
+    // Colour is informational, but it is the first thing to check when an
+    // export looks washed out: everything goes through an sRGB 2D canvas, so
+    // a wide-gamut or HDR source is converted on the way through.
+    let colorSpace: string | undefined;
+    let hdr: boolean | undefined;
+    try {
+      const cs = await track.getColorSpace();
+      const parts = [cs.primaries, cs.transfer, cs.matrix].filter(Boolean);
+      const range = cs.fullRange === true ? " / full" : cs.fullRange === false ? " / limited" : "";
+      colorSpace = parts.length ? `${parts.join(" / ")}${range}` : undefined;
+      hdr = await track.hasHighDynamicRange();
+    } catch {
+      // Not every container reports colour; this is a diagnostic, not a
+      // requirement.
+    }
+
+    return { width, height, duration, name: file.name, frameRate, colorSpace, hdr };
   } finally {
     input.dispose();
   }

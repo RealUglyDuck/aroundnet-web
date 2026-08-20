@@ -9,6 +9,8 @@ interface Props {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   /** Changes here force a redraw while paused. */
   currentTime: number;
+  /** While playing, the canvas is driven by an animation loop instead. */
+  playing: boolean;
   className?: string;
 }
 
@@ -17,7 +19,7 @@ interface Props {
  * element the stage shows. It uses the exact same {@link solveCrop} the
  * exporter uses, so what you see here is what lands in the MP4.
  */
-export function ReframePreview({ doc, videoRef, currentTime, className }: Props) {
+export function ReframePreview({ doc, videoRef, currentTime, playing, className }: Props) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   // Read the doc through a ref inside the animation loop so the loop doesn't
   // have to be torn down and rebuilt on every keyframe edit.
@@ -51,10 +53,10 @@ export function ReframePreview({ doc, videoRef, currentTime, className }: Props)
     );
   }, [videoRef]);
 
-  // One rAF loop for the lifetime of the preview: cheap, and it keeps the
-  // canvas in step with playback without relying on `timeupdate` (which only
-  // fires ~4×/second).
+  // Only loop while playing. Redrawing every frame forever costs real work for
+  // nothing while paused, and it competes with scrubbing for the main thread.
   React.useEffect(() => {
+    if (!playing) return;
     let frame = 0;
     const tick = () => {
       draw();
@@ -62,10 +64,19 @@ export function ReframePreview({ doc, videoRef, currentTime, className }: Props)
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [draw]);
+  }, [draw, playing]);
 
-  // Publish the latest doc to the loop, and redraw immediately after a seek
-  // or an edit so the preview updates while paused.
+  // While paused, redraw when the frame actually arrives. A seek is async, so
+  // drawing only on the currentTime change would show the previous frame.
+  React.useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.addEventListener("seeked", draw);
+    return () => video.removeEventListener("seeked", draw);
+  }, [draw, videoRef]);
+
+  // Publish the latest doc to the loop, and redraw immediately on an edit so
+  // reframing updates the preview without waiting for a seek.
   React.useEffect(() => {
     docRef.current = doc;
     draw();

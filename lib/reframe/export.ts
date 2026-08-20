@@ -17,7 +17,6 @@ import {
   BufferTarget,
   CanvasSource,
   EncodedAudioPacketSource,
-  EncodedPacketSink,
   Input,
   Mp4OutputFormat,
   Output,
@@ -29,8 +28,15 @@ import {
   canEncodeVideo,
   type Quality,
 } from "mediabunny";
-import type { ReframeDoc } from "./model.ts";
+import { clamp, exportRanges, minSegmentDuration, type ReframeDoc } from "./model.ts";
 import { cropTransform, solveCrop } from "./solve.ts";
+import {
+  copyAudioPackets,
+  createReelAudioSource,
+  encodeAudioReel,
+  planAudio,
+  type ExportRange,
+} from "./export-audio.ts";
 
 export type ExportQuality = "low" | "medium" | "high" | "veryHigh";
 
@@ -42,22 +48,32 @@ const QUALITY_MAP: Record<ExportQuality, Quality> = {
 };
 
 export interface ExportProgress {
-  /** 0–1, based on how far through the source timeline we are. */
+  /** 0–1 across the summed duration of every range being rendered. */
   fraction: number;
   framesRendered: number;
   /** Which stage is running, for the UI label. */
   stage: "video" | "audio" | "finalizing";
+  /** 1-based index of the range being rendered, and how many there are. */
+  segmentIndex: number;
+  segmentCount: number;
 }
 
 export interface ExportOptions {
   doc: ReframeDoc;
   file: File;
   quality?: ExportQuality;
-  /** Copy the source audio track across. Default true. */
+  /** Keep the source audio. Default true. */
   includeAudio?: boolean;
-  /** Render only part of the source, in seconds. Defaults to the whole video. */
-  trim?: { start: number; end: number };
+  /**
+   * Ranges to render, in seconds, joined end to end into one output. Defaults
+   * to the document's segments, or the whole clip when it has none.
+   */
+  ranges?: ExportRange[];
+  /** Render a single sub-range. Superseded by `ranges`. */
+  trim?: ExportRange;
   onProgress?: (progress: ExportProgress) => void;
+  /** Non-fatal notices, e.g. audio being dropped for an unsupported codec. */
+  onNotice?: (message: string) => void;
   signal?: AbortSignal;
 }
 
@@ -90,14 +106,26 @@ export async function exportReframedVideo({
   file,
   quality = "high",
   includeAudio = true,
+  ranges,
   trim,
   onProgress,
+  onNotice,
   signal,
 }: ExportOptions): Promise<Blob> {
-  const start = Math.max(0, trim?.start ?? 0);
-  const end = Math.min(doc.source.duration, trim?.end ?? doc.source.duration);
-  if (!(end > start)) throw new Error("Export range is empty.");
-  const span = end - start;
+  const duration = doc.source.duration;
+  const minRange = minSegmentDuration(doc);
+  const requested = ranges ?? (trim ? [trim] : exportRanges(doc));
+  const resolved = requested
+    .map((r) => ({
+      start: clamp(Math.min(r.start, r.end), 0, duration),
+      end: clamp(Math.max(r.start, r.end), 0, duration),
+    }))
+    .filter((r) => r.end - r.start >= minRange)
+    .sort((a, b) => a.start - b.start);
+  if (resolved.length === 0) throw new Error("Export range is empty.");
+
+  const totalSpan = resolved.reduce((sum, r) => sum + (r.end - r.start), 0);
+  const fps = doc.source.frameRate || 30;
 
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
   const output = new Output({
@@ -128,105 +156,124 @@ export async function exportReframedVideo({
       rotation: 0,
     });
 
-    // Audio is only copied when the source codec is legal inside MP4 (AAC,
-    // MP3, …). Anything else — Opus in a WebM, say — is dropped rather than
-    // silently transcoded.
     const audioTrack = includeAudio ? await input.getPrimaryAudioTrack() : null;
-    const audioCodec = audioTrack ? await audioTrack.getCodec() : null;
-    const audioSupported =
-      !!audioCodec && output.format.getSupportedCodecs().includes(audioCodec);
-    const audioSource =
-      audioTrack && audioSupported && audioCodec
-        ? new EncodedAudioPacketSource(audioCodec)
-        : null;
-    if (audioSource) output.addAudioTrack(audioSource);
+    const plan = await planAudio(audioTrack, output.format.getSupportedCodecs(), resolved.length);
+    if (plan.kind === "none" && plan.reason) onNotice?.(plan.reason);
+
+    const copySource = plan.kind === "copy" ? new EncodedAudioPacketSource(plan.codec) : null;
+    const reelSource = plan.kind === "reencode" ? createReelAudioSource() : null;
+    if (copySource) output.addAudioTrack(copySource);
+    if (reelSource) output.addAudioTrack(reelSource);
 
     await output.start();
 
-    /* ── Video: decode → crop → encode ──────────────────────────────── */
+    /* ── Video: decode → crop → encode, one range after another ─────── */
     const sink = new VideoSampleSink(videoTrack);
     let framesRendered = 0;
+    let outOffset = 0;
 
-    // The output must start at zero, so everything is rebased. The offset
-    // can't just be `start`: containers routinely carry a small composition
-    // or edit-list offset, so the first frame may sit slightly *before* the
-    // requested time (a track starting at -0.0015s is common), and a trimmed
-    // export begins on the last frame at or before the in-point. Both tracks
-    // share one offset, which keeps A/V sync exact.
-    let timeOffset: number | null = null;
+    for (const [index, range] of resolved.entries()) {
+      const span = range.end - range.start;
+      let firstInRange = true;
 
-    for await (const sample of sink.samples(start, end)) {
-      try {
-        throwIfAborted(signal);
-        if (timeOffset === null) timeOffset = Math.min(sample.timestamp, start);
-        const crop = solveCrop(doc, sample.timestamp);
+      for await (const sample of sink.samples(range.start, range.end)) {
+        try {
+          throwIfAborted(signal);
 
-        // The crop is expressed against the probed source dimensions, but the
-        // decoded sample is the ground truth — rescale if they disagree. The
-        // on-screen preview does the same against the video element, which is
-        // why it can look right while an unscaled export does not.
-        const scaleX = sample.displayWidth / doc.source.width;
-        const scaleY = sample.displayHeight / doc.source.height;
-        const scaled = {
-          x: crop.x * scaleX,
-          y: crop.y * scaleY,
-          width: crop.width * scaleX,
-          height: crop.height * scaleY,
-        };
+          // samples() yields the frame *covering* range.start, whose timestamp
+          // is before it. Clamping to 0 pins that frame to the join and keeps
+          // output timestamps non-decreasing, which the muxer asserts.
+          const local = Math.max(0, sample.timestamp - range.start);
+          const outTs = outOffset + local;
 
-        // Crop via a canvas transform that maps the crop rect onto the whole
-        // canvas, then draw the frame whole. This uses draw()'s plain
-        // destination-only path — the same shape as the preview's drawImage —
-        // instead of its source-rect overload, while still letting mediabunny
-        // apply any rotation metadata.
-        const t = cropTransform(scaled, doc.target);
-        ctx.save();
-        ctx.setTransform(t.scaleX, 0, 0, t.scaleY, t.translateX, t.translateY);
-        sample.draw(ctx, 0, 0, sample.displayWidth, sample.displayHeight);
-        ctx.restore();
-        await videoSource.add(Math.max(0, sample.timestamp - timeOffset), sample.duration);
-        framesRendered += 1;
-        onProgress?.({
-          fraction: Math.min(1, (sample.timestamp - start) / span),
-          framesRendered,
-          stage: "video",
-        });
-      } finally {
-        sample.close();
+          const crop = solveCrop(doc, sample.timestamp);
+
+          // The crop is expressed against the probed source dimensions, but the
+          // decoded sample is the ground truth — rescale if they disagree. The
+          // on-screen preview does the same against the video element, which is
+          // why it can look right while an unscaled export does not.
+          const scaleX = sample.displayWidth / doc.source.width;
+          const scaleY = sample.displayHeight / doc.source.height;
+          const scaled = {
+            x: crop.x * scaleX,
+            y: crop.y * scaleY,
+            width: crop.width * scaleX,
+            height: crop.height * scaleY,
+          };
+
+          // Crop via a canvas transform that maps the crop rect onto the whole
+          // canvas, then draw the frame whole. This uses draw()'s plain
+          // destination-only path — the same shape as the preview's drawImage —
+          // instead of its source-rect overload, while still letting mediabunny
+          // apply any rotation metadata.
+          const t = cropTransform(scaled, doc.target);
+          ctx.save();
+          ctx.setTransform(t.scaleX, 0, 0, t.scaleY, t.translateX, t.translateY);
+          sample.draw(ctx, 0, 0, sample.displayWidth, sample.displayHeight);
+          ctx.restore();
+
+          await videoSource.add(
+            outTs,
+            Math.max(1 / fps / 4, Math.min(sample.duration || 1 / fps, span - local)),
+            // The frame after a cut has nothing in common with the one before
+            // it, so a P-frame there smears. keyFrame is a hint, but encoders
+            // honour it in practice.
+            firstInRange ? { keyFrame: true } : undefined,
+          );
+          firstInRange = false;
+          framesRendered += 1;
+          onProgress?.({
+            fraction: Math.min(1, outTs / totalSpan),
+            framesRendered,
+            stage: "video",
+            segmentIndex: index + 1,
+            segmentCount: resolved.length,
+          });
+        } finally {
+          sample.close();
+        }
       }
+      outOffset += span;
     }
     videoSource.close();
 
-    /* ── Audio: straight packet copy ────────────────────────────────── */
-    if (audioSource && audioTrack) {
-      onProgress?.({ fraction: 1, framesRendered, stage: "audio" });
-      const decoderConfig = await audioTrack.getDecoderConfig();
-      if (!decoderConfig) throw new Error("Could not read the audio decoder config.");
-
-      const packetSink = new EncodedPacketSink(audioTrack);
-      // Start from the key packet at or before `start` so the decoder has
-      // everything it needs; packets fully before the in-point are dropped.
-      const startPacket = await packetSink.getKeyPacket(start);
-      const offset = timeOffset ?? start;
-      let isFirst = true;
-
-      for await (const packet of packetSink.packets(startPacket ?? undefined)) {
-        throwIfAborted(signal);
-        if (packet.timestamp >= end) break;
-        if (packet.timestamp + packet.duration <= offset) continue;
-        // A packet straddling the in-point is kept but pinned to zero rather
-        // than going negative, which the muxer rejects.
-        const shifted = Math.max(0, packet.timestamp - offset);
-        await audioSource.add(
-          shifted === packet.timestamp ? packet : packet.clone({ timestamp: shifted }),
-          isFirst ? { decoderConfig } : undefined,
-        );
-        isFirst = false;
+    /* ── Audio ──────────────────────────────────────────────────────── */
+    if (audioTrack && (copySource || reelSource)) {
+      onProgress?.({
+        fraction: 1,
+        framesRendered,
+        stage: "audio",
+        segmentIndex: resolved.length,
+        segmentCount: resolved.length,
+      });
+      const abort = () => throwIfAborted(signal);
+      if (copySource) {
+        await copyAudioPackets({
+          audioTrack,
+          audioSource: copySource,
+          range: resolved[0],
+          timeOffset: resolved[0].start,
+          throwIfAborted: abort,
+        });
+        copySource.close();
+      } else if (reelSource) {
+        await encodeAudioReel({
+          audioTrack,
+          audioSource: reelSource,
+          ranges: resolved,
+          throwIfAborted: abort,
+        });
+        reelSource.close();
       }
-      audioSource.close();
     }
 
-    onProgress?.({ fraction: 1, framesRendered, stage: "finalizing" });
+    onProgress?.({
+      fraction: 1,
+      framesRendered,
+      stage: "finalizing",
+      segmentIndex: resolved.length,
+      segmentCount: resolved.length,
+    });
     await output.finalize();
 
     const buffer = output.target.buffer;
@@ -242,9 +289,10 @@ export async function exportReframedVideo({
   }
 }
 
-/** Suggests `clip.mp4` → `clip-9x16.mp4`. */
+/** Suggests `clip.mp4` → `clip-1080x1920-reel.mp4`. */
 export function suggestedFilename(doc: ReframeDoc): string {
   const base = doc.source.name.replace(/\.[^.]+$/, "") || "reframed";
   const ratio = `${doc.target.width}x${doc.target.height}`;
-  return `${base}-${ratio}.mp4`;
+  const reel = doc.segments.length > 1 ? "-reel" : "";
+  return `${base}-${ratio}${reel}.mp4`;
 }

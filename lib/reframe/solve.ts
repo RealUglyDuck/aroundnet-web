@@ -7,7 +7,13 @@
  * {@link solveCrop} so there is exactly one definition of where the frame is.
  */
 
-import { clamp, type ReframeDoc, type ReframeKeyframe } from "./model.ts";
+import {
+  clamp,
+  keyframeEpsilon,
+  type ReframeDoc,
+  type ReframeKeyframe,
+  type ReframeSegment,
+} from "./model.ts";
 
 /** A crop window in source pixels, ready for `drawImage`'s source args. */
 export interface CropRect {
@@ -79,24 +85,85 @@ function ease(easing: ReframeKeyframe["easing"], u: number): number {
 }
 
 /**
+ * The half-open index window of `doc.keyframes` that governs time `t`.
+ *
+ * With no segments — or with `t` outside every segment — this is the whole
+ * array, i.e. exactly the behaviour from before segments existed. Inside a
+ * segment it is that segment's own keyframes, so a pan can't interpolate
+ * across a cut: each point in the reel is framed independently.
+ *
+ * Membership here is fuzzy by half a frame at both ends, unlike the strictly
+ * half-open `segmentAt` used for playback. A keyframe placed on the very frame
+ * you pressed Out on must belong to that segment, and a keyframe sitting on a
+ * shared boundary should hold the framing on both sides of the cut.
+ */
+export function keyframeRangeAt(doc: ReframeDoc, t: number): { lo: number; hi: number } {
+  const all = { lo: 0, hi: doc.keyframes.length };
+  if (doc.segments.length === 0) return all;
+
+  const eps = keyframeEpsilon(doc);
+  const firstAtOrAfter = (time: number) => {
+    let i = 0;
+    while (i < doc.keyframes.length && doc.keyframes[i].t < time) i += 1;
+    return i;
+  };
+
+  const seg = doc.segments.find((s) => t >= s.start - eps && t <= s.end + eps);
+  if (seg) {
+    const lo = firstAtOrAfter(seg.start - eps);
+    let hi = lo;
+    while (hi < doc.keyframes.length && doc.keyframes[hi].t <= seg.end + eps) hi += 1;
+    // A segment you haven't framed yet keeps the surrounding framing rather
+    // than snapping to dead centre.
+    return hi > lo ? { lo, hi } : all;
+  }
+
+  // In a gap, which belongs to the segment *before* it. The range therefore
+  // runs from that segment's start up to (but not into) the next segment.
+  //
+  // Two things depend on this. Frames here never reach the export, but the
+  // live preview still solves them: a play-segments-only skip sets
+  // currentTime asynchronously, so for a frame or two the playhead sits past
+  // the outgoing segment while the picture is still its last frame — and
+  // reaching into the *next* segment's keyframes there makes the crop jump one
+  // frame before the cut. Equally, a keyframe dropped in the gap has to count,
+  // or clicking the video somewhere unmarked would silently do nothing.
+  const previous = segmentBefore(doc, t);
+  const next = doc.segments.find((s) => s.start > t);
+  const lo = previous ? firstAtOrAfter(previous.start - eps) : 0;
+  const hi = next ? firstAtOrAfter(next.start - eps) : doc.keyframes.length;
+  return hi > lo ? { lo, hi } : all;
+}
+
+/** The last segment that ends at or before `t`. Segments are sorted. */
+function segmentBefore(doc: ReframeDoc, t: number): ReframeSegment | null {
+  let found: ReframeSegment | null = null;
+  for (const seg of doc.segments) {
+    if (seg.end > t) break;
+    found = seg;
+  }
+  return found;
+}
+
+/**
  * Interpolate the raw (un-clamped) crop state at time `t`.
  *
- * Outside the keyframe range the nearest keyframe is held, so a single
- * keyframe means a static crop for the whole video and no keyframes means
- * dead centre.
+ * Outside the governing keyframe range the nearest keyframe is held, so a
+ * single keyframe means a static crop and no keyframes means dead centre.
  */
 export function solveState(doc: ReframeDoc, t: number): CropState {
   const kfs = doc.keyframes;
-  if (kfs.length === 0) return { cx: 0.5, cy: 0.5, zoom: 1 };
+  const { lo, hi } = keyframeRangeAt(doc, t);
+  if (hi <= lo) return { cx: 0.5, cy: 0.5, zoom: 1 };
 
-  const first = kfs[0];
+  const first = kfs[lo];
   if (t <= first.t) return { cx: first.cx, cy: first.cy, zoom: first.zoom };
 
-  const last = kfs[kfs.length - 1];
+  const last = kfs[hi - 1];
   if (t >= last.t) return { cx: last.cx, cy: last.cy, zoom: last.zoom };
 
-  let i = 0;
-  while (i < kfs.length - 1 && kfs[i + 1].t <= t) i += 1;
+  let i = lo;
+  while (i < hi - 1 && kfs[i + 1].t <= t) i += 1;
   const a = kfs[i];
   const b = kfs[i + 1];
 

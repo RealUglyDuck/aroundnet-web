@@ -61,8 +61,39 @@ more animate between each other. Export renders a real MP4 in the browser via
 WebCodecs — no upload, no server.
 
 The timeline is a zoomable detail track over a full-clip overview strip (scroll
-to zoom, shift-scroll or drag the lit window to pan), and playback runs from
-0.1× to 2× so you can tap along with fast action in something like real time.
+to zoom, shift-scroll or drag the lit window to pan).
+
+Long footage is handled with **segments**: mark in/out points around each rally
+and the export joins them end to end into one vertical highlight reel. Nothing
+is destructive — segments are ranges in the document, the source file is never
+touched, and "play segments only" previews the result without committing to it.
+
+Shortcuts are laid out for the left hand, so the right stays on the mouse:
+
+```
+A F         mark in / out            1 2 3 4 5   speed: reverse · 0.5× · 1× · 1.5× · 2×
+S D         speed down / up          G           keyframe at playhead
+Q W         frame back / forward     T           play segments only
+E R         −1s / +1s                Esc         drop the open in-point
+⇧A          force-move the in-point  ⌘Z          undo (⇧⌘Z redo)
+```
+
+`S`/`D` step through the same five presets the number keys select, so the speed row
+always shows which one you are on.
+
+"Play segments only" (`T`) also switches the timeline into **reel view**: the gaps are
+collapsed and the ruler reads in exported time, so the timeline matches the rendered
+output frame for frame. Segment edges can't be dragged in that mode — a segment's start
+sits at a fixed reel position regardless of where it points into the source, so the
+handle could never track the pointer. Turn it off to go back to editing the source.
+
+In and Out sit at the outer ends of the home row with the speed keys between them, so a
+slip lands on a harmless speed change rather than on the opposite marker. In is also
+forgiving: once the playhead is more than a few seconds past an open in-point, pressing
+it closes the segment instead of discarding the start of the rally.
+
+Browsers have no native reverse playback, so `1` simulates it by stepping
+backwards and will stutter on long-GOP footage; `C` is the smooth alternative.
 
 It shares nothing with the tournament features and has no Supabase or auth
 dependency, so it stays out of the way of the rest of the app. The crop math in
@@ -71,7 +102,8 @@ it can be ported to the ARoundNet iOS app; see **`docs/reframe-format.md`** for
 the document format, the math, and the AVFoundation mapping.
 
 ```bash
-node --experimental-strip-types lib/reframe/solve.test.ts   # solver checks
+node --experimental-strip-types lib/reframe/model.test.ts   # segments + markers
+node --experimental-strip-types lib/reframe/solve.test.ts   # crop + interpolation
 ```
 
 ## Project layout
@@ -90,6 +122,6 @@ components/             design-system UI + feature components
 lib/
   supabase/            client, queries, mutations, edge-function wrappers, realtime, types
   hooks/               useTournament (load + realtime)
-  reframe/             portable model + solver, WebCodecs export (mediabunny)
+  reframe/             portable model + solver + segments, WebCodecs export (mediabunny)
   types.ts             row aliases + composed view models
 ```

@@ -3,16 +3,38 @@
 import * as React from "react";
 import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { ReframeDoc, ReframeKeyframe } from "@/lib/reframe/model";
+import {
+  reelToSourceTime,
+  sourceToReelTime,
+  sourceToReelTimeClamped,
+  totalSegmentDuration,
+  type ReframeDoc,
+  type ReframeKeyframe,
+  type ReframeSegment,
+} from "@/lib/reframe/model";
 import { formatTimecode } from "@/lib/reframe/format";
 
 interface Props {
   doc: ReframeDoc;
   currentTime: number;
   selectedId: string | null;
+  selectedSegmentId: string | null;
+  /** In-point of the segment being marked, drawn as a live dashed band. */
+  openIn: number | null;
+  /**
+   * Show the reel rather than the source: gaps are collapsed so the timeline
+   * matches what the export produces. Driven by "play segments only".
+   */
+  reelView: boolean;
   onSeek: (t: number) => void;
   onSelect: (id: string | null) => void;
-  onMoveKeyframe: (id: string, t: number) => void;
+  /** `first` marks the start of a drag gesture, so it can be one undo step. */
+  onMoveKeyframe: (id: string, t: number, first: boolean) => void;
+  onSelectSegment: (id: string | null) => void;
+  /** Live during a drag: clamps only, no merging. */
+  onResizeSegment: (id: string, edge: "start" | "end", t: number) => void;
+  /** Pointer-up: merge and renumber once the gesture is over. */
+  onCommitSegments: () => void;
 }
 
 /** Roughly one label every 90px, snapped to a human-friendly interval. */
@@ -30,11 +52,32 @@ export function ReframeTimeline({
   doc,
   currentTime,
   selectedId,
+  selectedSegmentId,
+  openIn,
+  reelView,
   onSeek,
   onSelect,
   onMoveKeyframe,
+  onSelectSegment,
+  onResizeSegment,
+  onCommitSegments,
 }: Props) {
-  const duration = doc.source.duration;
+  // Two coordinate spaces. Everything the component does internally — the view
+  // window, ruler, band positions — is in *display* time; times crossing the
+  // component boundary (currentTime, onSeek, keyframe and segment bounds) are
+  // always *source* time. toDisplay/fromDisplay are the only bridge, so the
+  // rest of the component is identical in both modes.
+  const reel = reelView && doc.segments.length > 0;
+  const duration = reel ? totalSegmentDuration(doc) : doc.source.duration;
+  const toDisplay = React.useCallback(
+    (t: number) => (reel ? sourceToReelTimeClamped(doc, t) : t),
+    [doc, reel],
+  );
+  const fromDisplay = React.useCallback(
+    (d: number) => (reel ? reelToSourceTime(doc, d) : d),
+    [doc, reel],
+  );
+
   const fps = doc.source.frameRate || 30;
   // Don't let the user zoom past ~10 frames across the full width; below that
   // the ruler is all noise and there's nothing left to aim at.
@@ -53,11 +96,13 @@ export function ReframeTimeline({
     viewRef.current = view;
   }, [view]);
 
-  // A new video resets the view to the whole clip. Adjusting state during
+  // A new video — or a switch between source and reel view, which replaces the
+  // coordinate space wholesale — resets the view to fit. Adjusting state during
   // render rather than in an effect avoids a frame showing the stale range.
-  const [lastDuration, setLastDuration] = React.useState(duration);
-  if (lastDuration !== duration) {
-    setLastDuration(duration);
+  const timebaseKey = `${reel}:${duration}`;
+  const [lastTimebase, setLastTimebase] = React.useState(timebaseKey);
+  if (lastTimebase !== timebaseKey) {
+    setLastTimebase(timebaseKey);
     setView({ start: 0, span: duration });
   }
 
@@ -84,33 +129,51 @@ export function ReframeTimeline({
 
   /* ── Coordinate mapping ──────────────────────────────────────────────── */
 
-  const timeAtDetail = React.useCallback((clientX: number) => {
-    const rect = trackRef.current?.getBoundingClientRect();
-    if (!rect || rect.width === 0) return 0;
-    const { start, span } = viewRef.current;
-    return clamp(start + ((clientX - rect.left) / rect.width) * span, 0, duration);
-  }, [duration]);
+  /** Display time under the pointer on the detail track. */
+  const displayAtDetail = React.useCallback(
+    (clientX: number) => {
+      const rect = trackRef.current?.getBoundingClientRect();
+      if (!rect || rect.width === 0) return 0;
+      const { start, span } = viewRef.current;
+      return clamp(start + ((clientX - rect.left) / rect.width) * span, 0, duration);
+    },
+    [duration],
+  );
 
-  const timeAtOverview = React.useCallback((clientX: number) => {
-    const rect = overviewRef.current?.getBoundingClientRect();
-    if (!rect || rect.width === 0) return 0;
-    return clamp(((clientX - rect.left) / rect.width) * duration, 0, duration);
-  }, [duration]);
+  /** Source time under the pointer — what callers outside this component want. */
+  const timeAtDetail = React.useCallback(
+    (clientX: number) => fromDisplay(displayAtDetail(clientX)),
+    [displayAtDetail, fromDisplay],
+  );
 
-  /** Position within the detail track, 0–1. May fall outside when off-screen. */
-  const detailPct = (t: number) => (view.span > 0 ? (t - view.start) / view.span : 0);
-  const overviewPct = (t: number) => (duration > 0 ? t / duration : 0);
+  const displayAtOverview = React.useCallback(
+    (clientX: number) => {
+      const rect = overviewRef.current?.getBoundingClientRect();
+      if (!rect || rect.width === 0) return 0;
+      return clamp(((clientX - rect.left) / rect.width) * duration, 0, duration);
+    },
+    [duration],
+  );
+
+  /** Position of a *source* time within the detail track, 0–1. */
+  const detailPct = (t: number) =>
+    view.span > 0 ? (toDisplay(t) - view.start) / view.span : 0;
+  /** Position of a *display* time, for spans already measured in display time. */
+  const detailPctOfDisplay = (d: number) => (view.span > 0 ? (d - view.start) / view.span : 0);
+  const overviewPct = (t: number) => (duration > 0 ? toDisplay(t) / duration : 0);
+  const overviewPctOfDisplay = (d: number) => (duration > 0 ? d / duration : 0);
 
   /* ── Keep the playhead in view ───────────────────────────────────────── */
 
   React.useEffect(() => {
     const { start, span } = viewRef.current;
     if (span >= duration) return;
-    if (currentTime >= start && currentTime <= start + span) return;
+    const head = toDisplay(currentTime);
+    if (head >= start && head <= start + span) return;
     // Park the playhead 10% in from the left so playback has room to run
     // before the next scroll, instead of re-scrolling every frame.
-    setViewClamped(currentTime - span * 0.1, span);
-  }, [currentTime, duration, setViewClamped]);
+    setViewClamped(head - span * 0.1, span);
+  }, [currentTime, duration, setViewClamped, toDisplay]);
 
   /* ── Zoom & pan on the detail track ──────────────────────────────────── */
 
@@ -154,6 +217,45 @@ export function ReframeTimeline({
 
   const [scrubbing, setScrubbing] = React.useState(false);
   const draggingRef = React.useRef<string | null>(null);
+  const segmentDragRef = React.useRef<{ id: string; edge: "start" | "end" } | null>(null);
+  const keyframeMovedRef = React.useRef(false);
+
+  // pointermove fires far faster than the display refreshes — a high-polling-
+  // rate mouse easily exceeds 500Hz — and each drag update re-renders the whole
+  // editor and assigns video.currentTime, which forces a decode. Coalescing to
+  // one update per animation frame is the difference between a smooth scrub and
+  // a queue of seeks the browser can never catch up with.
+  const frameRef = React.useRef<number | null>(null);
+  const pendingRef = React.useRef<(() => void) | null>(null);
+
+  const scheduleFrame = React.useCallback((fn: () => void) => {
+    pendingRef.current = fn;
+    if (frameRef.current !== null) return;
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = null;
+      const run = pendingRef.current;
+      pendingRef.current = null;
+      run?.();
+    });
+  }, []);
+
+  /** Apply the last queued update now — the final position must not be lost. */
+  const flushFrame = React.useCallback(() => {
+    if (frameRef.current !== null) {
+      cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+    }
+    const run = pendingRef.current;
+    pendingRef.current = null;
+    run?.();
+  }, []);
+
+  React.useEffect(
+    () => () => {
+      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+    },
+    [],
+  );
 
   const handleDetailDown = (e: React.PointerEvent) => {
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -162,20 +264,52 @@ export function ReframeTimeline({
   };
 
   const handleDetailMove = (e: React.PointerEvent) => {
-    const draggingId = draggingRef.current;
-    if (draggingId) {
-      onMoveKeyframe(draggingId, timeAtDetail(e.clientX));
+    // Read the coordinate now; the scheduled callback runs after the event.
+    const { clientX } = e;
+    const segmentDrag = segmentDragRef.current;
+    if (segmentDrag) {
+      scheduleFrame(() =>
+        onResizeSegment(segmentDrag.id, segmentDrag.edge, timeAtDetail(clientX)),
+      );
       return;
     }
-    if (scrubbing) onSeek(timeAtDetail(e.clientX));
+    const draggingId = draggingRef.current;
+    if (draggingId) {
+      scheduleFrame(() => {
+        onMoveKeyframe(draggingId, timeAtDetail(clientX), !keyframeMovedRef.current);
+        keyframeMovedRef.current = true;
+      });
+      return;
+    }
+    if (scrubbing) scheduleFrame(() => onSeek(timeAtDetail(clientX)));
   };
 
   const endDetail = (e: React.PointerEvent) => {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
+    // Land the final position before committing, so the merge sees where the
+    // edge actually ended up rather than one frame behind.
+    flushFrame();
     draggingRef.current = null;
     setScrubbing(false);
+    if (segmentDragRef.current) {
+      segmentDragRef.current = null;
+      onCommitSegments();
+    }
+  };
+
+  const startSegmentDrag = (
+    e: React.PointerEvent,
+    seg: ReframeSegment,
+    edge: "start" | "end",
+  ) => {
+    e.stopPropagation();
+    // Capture on the track, not the handle: the handle moves out from under
+    // the pointer as it is dragged.
+    trackRef.current?.setPointerCapture(e.pointerId);
+    segmentDragRef.current = { id: seg.id, edge };
+    onSelectSegment(seg.id);
   };
 
   const startKeyframeDrag = (e: React.PointerEvent, kf: ReframeKeyframe) => {
@@ -184,6 +318,7 @@ export function ReframeTimeline({
     // the pointer as it is dragged.
     trackRef.current?.setPointerCapture(e.pointerId);
     draggingRef.current = kf.id;
+    keyframeMovedRef.current = false;
     onSelect(kf.id);
     onSeek(kf.t);
   };
@@ -194,31 +329,35 @@ export function ReframeTimeline({
 
   const handleOverviewDown = (e: React.PointerEvent) => {
     e.currentTarget.setPointerCapture(e.pointerId);
-    const t = timeAtOverview(e.clientX);
+    const d = displayAtOverview(e.clientX);
     const { start, span } = viewRef.current;
-    if (zoomed && t >= start && t <= start + span) {
+    if (zoomed && d >= start && d <= start + span) {
       // Grabbing the window itself pans without moving the playhead.
-      panRef.current = { grabOffset: t - start };
+      panRef.current = { grabOffset: d - start };
     } else {
       panRef.current = null;
-      onSeek(t);
+      onSeek(fromDisplay(d));
     }
   };
 
   const handleOverviewMove = (e: React.PointerEvent) => {
     if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
-    const t = timeAtOverview(e.clientX);
-    if (panRef.current) {
-      setViewClamped(t - panRef.current.grabOffset, viewRef.current.span);
-    } else {
-      onSeek(t);
-    }
+    const { clientX } = e;
+    scheduleFrame(() => {
+      const d = displayAtOverview(clientX);
+      if (panRef.current) {
+        setViewClamped(d - panRef.current.grabOffset, viewRef.current.span);
+      } else {
+        onSeek(fromDisplay(d));
+      }
+    });
   };
 
   const endOverview = (e: React.PointerEvent) => {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
+    flushFrame();
     panRef.current = null;
   };
 
@@ -241,6 +380,13 @@ export function ReframeTimeline({
         </span>
         <div className="flex items-center gap-1">
           <span className="mr-1 tabular-nums">
+            {doc.segments.length > 0 && (
+              <>
+                {reel ? "reel · " : ""}
+                {doc.segments.length} segment{doc.segments.length === 1 ? "" : "s"} ·{" "}
+                {formatTimecode(totalSegmentDuration(doc))} ·{" "}
+              </>
+            )}
             {doc.keyframes.length} keyframe{doc.keyframes.length === 1 ? "" : "s"} ·{" "}
             {zoomed ? `${formatTimecode(view.span)} shown` : formatTimecode(duration)}
           </span>
@@ -263,7 +409,7 @@ export function ReframeTimeline({
       {/* ── Detail track ───────────────────────────────────────────────── */}
       <div
         ref={trackRef}
-        className="relative h-20 w-full cursor-pointer overflow-hidden rounded-card bg-surface touch-none"
+        className="relative h-24 w-full cursor-pointer overflow-hidden rounded-card bg-surface touch-none"
         onPointerDown={handleDetailDown}
         onPointerMove={handleDetailMove}
         onPointerUp={endDetail}
@@ -271,7 +417,11 @@ export function ReframeTimeline({
       >
         <div className="absolute inset-x-0 top-0 h-6 border-b border-divider">
           {ticks.map((t) => (
-            <div key={t} className="absolute top-0 h-full" style={{ left: pct(detailPct(t)) }}>
+            <div
+              key={t}
+              className="absolute top-0 h-full"
+              style={{ left: pct(detailPctOfDisplay(t)) }}
+            >
               <div className="h-2 w-px bg-divider" />
               <span className="absolute left-1 top-1 whitespace-nowrap text-[10px] tabular-nums text-text-secondary">
                 {formatTimecode(t, interval < 1 ? doc.source.frameRate : undefined)}
@@ -280,18 +430,77 @@ export function ReframeTimeline({
           ))}
         </div>
 
+        {/* Segment bands, between the ruler and the keyframe row. */}
+        {doc.segments.map((seg) => {
+          const left = detailPct(seg.start);
+          // In reel view the bands butt together, so the right edge is measured
+          // from the left plus the segment's own length rather than from
+          // toDisplay(seg.end) — which would land on the *next* segment.
+          const width = (seg.end - seg.start) / view.span;
+          if (left + width < -0.02 || left > 1.02) return null;
+          const isSelected = seg.id === selectedSegmentId;
+          return (
+            <div
+              key={seg.id}
+              className={cn(
+                "absolute top-7 flex h-7 items-center overflow-hidden border",
+                reel ? "rounded-none border-x-2" : "rounded-small",
+                isSelected
+                  ? "border-accent bg-accent/35"
+                  : "border-accent/50 bg-accent/20 hover:bg-accent/30",
+              )}
+              style={{ left: pct(left), width: pct(width) }}
+              // No stopPropagation: clicking a band selects it and still
+              // scrubs, so dragging across the track keeps working.
+              onPointerDown={() => onSelectSegment(seg.id)}
+            >
+              <span className="truncate px-1.5 text-[10px] text-text-primary">{seg.name}</span>
+              {/* Edges can't be dragged in reel view: a segment's start sits at
+                  a fixed reel position no matter where it points into the
+                  source, so the handle could never follow the pointer. */}
+              {!reel && (
+                <>
+                  <div
+                    className="absolute inset-y-0 left-0 w-2 cursor-ew-resize touch-none"
+                    onPointerDown={(e) => startSegmentDrag(e, seg, "start")}
+                  />
+                  <div
+                    className="absolute inset-y-0 right-0 w-2 cursor-ew-resize touch-none"
+                    onPointerDown={(e) => startSegmentDrag(e, seg, "end")}
+                  />
+                </>
+              )}
+            </div>
+          );
+        })}
+
+        {/* The segment currently being marked. Hidden in reel view, where a
+            draft in a gap has no position to occupy. */}
+        {openIn !== null && !reel && (
+          <div
+            className="pointer-events-none absolute top-7 h-7 rounded-small border border-dashed border-accent bg-accent/10"
+            style={{
+              left: pct(detailPct(Math.min(openIn, currentTime))),
+              width: pct(Math.abs(currentTime - openIn) / view.span),
+            }}
+          />
+        )}
+
         {/* The animated span, so it's obvious where the pan is defined. */}
         {first && last && last.t > first.t && (
           <div
-            className="absolute top-[52px] h-0.5 rounded-pill bg-accent/40"
+            className="absolute top-[76px] h-0.5 rounded-pill bg-accent/40"
             style={{
               left: pct(detailPct(first.t)),
-              width: pct((last.t - first.t) / view.span),
+              width: pct((toDisplay(last.t) - toDisplay(first.t)) / view.span),
             }}
           />
         )}
 
         {doc.keyframes.map((kf) => {
+          // In reel view a keyframe inside a gap is genuinely absent from the
+          // output, so it is hidden rather than piled onto the nearest cut.
+          if (reel && sourceToReelTime(doc, kf.t) === null) return null;
           const p = detailPct(kf.t);
           if (p < -0.02 || p > 1.02) return null;
           return (
@@ -299,7 +508,7 @@ export function ReframeTimeline({
               key={kf.id}
               type="button"
               aria-label={`Keyframe at ${formatTimecode(kf.t, doc.source.frameRate)}`}
-              className="absolute top-[53px] -ml-[7px] h-3.5 w-3.5 rotate-45 rounded-[2px] transition-colors"
+              className="absolute top-[77px] -ml-[7px] h-3.5 w-3.5 rotate-45 rounded-[2px] transition-colors"
               style={{ left: pct(p) }}
               onPointerDown={(e) => startKeyframeDrag(e, kf)}
             >
@@ -332,21 +541,41 @@ export function ReframeTimeline({
         onPointerUp={endOverview}
         onPointerCancel={endOverview}
         title={
-          zoomed
-            ? "Drag the lit window to pan · click elsewhere to jump"
-            : "Click or drag to jump · scroll on the track above to zoom in"
+          reel
+            ? "Showing the reel — gaps are collapsed. Turn off \u201cplay segments only\u201d to edit the source."
+            : zoomed
+              ? "Drag the lit window to pan · click elsewhere to jump"
+              : "Click or drag to jump · scroll on the track above to zoom in"
         }
       >
-        {doc.keyframes.map((kf) => (
+        {doc.segments.map((seg) => (
           <div
-            key={kf.id}
+            key={seg.id}
             className={cn(
-              "absolute bottom-1 top-1 w-px",
-              kf.id === selectedId ? "bg-white" : "bg-accent/60",
+              "absolute inset-y-0",
+              reel && "border-r border-background",
+              seg.id === selectedSegmentId ? "bg-accent/45" : "bg-accent/25",
             )}
-            style={{ left: pct(overviewPct(kf.t)) }}
+            style={{
+              left: pct(overviewPct(seg.start)),
+              width: pct((seg.end - seg.start) / duration),
+            }}
           />
         ))}
+
+        {doc.keyframes.map((kf) => {
+          if (reel && sourceToReelTime(doc, kf.t) === null) return null;
+          return (
+            <div
+              key={kf.id}
+              className={cn(
+                "absolute bottom-1 top-1 w-px",
+                kf.id === selectedId ? "bg-white" : "bg-accent/60",
+              )}
+              style={{ left: pct(overviewPct(kf.t)) }}
+            />
+          );
+        })}
 
         {/* The slice of the clip the detail track is showing. */}
         <div
@@ -354,7 +583,10 @@ export function ReframeTimeline({
             "absolute inset-y-0 border-x-2 border-accent/70 bg-accent/15",
             zoomed ? "cursor-grab" : "cursor-pointer",
           )}
-          style={{ left: pct(overviewPct(view.start)), width: pct(view.span / duration) }}
+          style={{
+            left: pct(overviewPctOfDisplay(view.start)),
+            width: pct(view.span / duration),
+          }}
         />
 
         <div
