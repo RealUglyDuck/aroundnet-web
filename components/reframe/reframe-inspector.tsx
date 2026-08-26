@@ -4,7 +4,7 @@ import * as React from "react";
 import { Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { EASINGS, type Easing, type ReframeDoc } from "@/lib/reframe/model";
+import { EASINGS, keyframeNear, type Easing, type ReframeDoc } from "@/lib/reframe/model";
 import { solveState } from "@/lib/reframe/solve";
 import { formatTimecode } from "@/lib/reframe/format";
 
@@ -41,6 +41,47 @@ export function ReframeInspector({
   const zoom = solveState(doc, currentTime).zoom;
   const selected = doc.keyframes.find((k) => k.id === selectedId) ?? null;
 
+  // Which keyframe the playhead is sitting on. The window is deliberately
+  // wider than the half-frame used for "is this the same keyframe" edits:
+  // during playback the playhead is only sampled once per animation frame,
+  // and at 2–5× it would step clean over a half-frame window and never
+  // register. A quarter-second still reads as "you are here".
+  const fps = doc.source.frameRate || 30;
+  const atPlayhead = keyframeNear(doc, currentTime, Math.max(0.25, 2 / fps));
+  const atPlayheadId = atPlayhead?.id ?? null;
+
+  const listRef = React.useRef<HTMLUListElement>(null);
+  const rowRefs = React.useRef(new Map<string, HTMLLIElement>());
+
+  const scrollRowIntoView = React.useCallback((id: string | null) => {
+    if (!id) return;
+    const list = listRef.current;
+    const row = rowRefs.current.get(id);
+    if (!list || !row) return;
+    const listRect = list.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    // Nudging scrollTop by hand rather than scrollIntoView: the latter walks
+    // every scrollable ancestor and would drag the whole page around during
+    // playback.
+    if (rowRect.top < listRect.top) {
+      list.scrollTop -= listRect.top - rowRect.top;
+    } else if (rowRect.bottom > listRect.bottom) {
+      list.scrollTop += rowRect.bottom - listRect.bottom;
+    }
+  }, []);
+
+  // Two separate triggers, not one combined "focus" value. Combining them
+  // means that leaving a keyframe's window mid-playback falls back to the
+  // selected row and scrolls *backwards* to it, so the list yo-yos between
+  // each keyframe passed and some distant selection.
+  React.useEffect(() => {
+    scrollRowIntoView(atPlayheadId);
+  }, [atPlayheadId, scrollRowIntoView]);
+
+  React.useEffect(() => {
+    scrollRowIntoView(selectedId);
+  }, [selectedId, scrollRowIntoView]);
+
   return (
     <div className="space-y-4">
       <div>
@@ -76,16 +117,27 @@ export function ReframeInspector({
             put; with two or more it animates between them.
           </p>
         ) : (
-          <ul className="max-h-64 space-y-1 overflow-y-auto pr-1">
+          <ul ref={listRef} className="max-h-64 space-y-1 overflow-y-auto pr-1">
             {doc.keyframes.map((kf, i) => {
               const isSelected = kf.id === selectedId;
+              const isAtPlayhead = kf.id === atPlayheadId;
               const isLast = i === doc.keyframes.length - 1;
               return (
-                <li key={kf.id}>
+                <li
+                  key={kf.id}
+                  ref={(el) => {
+                    if (el) rowRefs.current.set(kf.id, el);
+                    else rowRefs.current.delete(kf.id);
+                  }}
+                >
                   <div
                     className={cn(
                       "flex items-center gap-2 rounded-small px-2 py-1.5 transition-colors",
-                      isSelected ? "bg-accent-muted" : "bg-surface hover:bg-surface-high",
+                      isSelected
+                        ? "bg-accent-muted"
+                        : isAtPlayhead
+                          ? "bg-surface-high ring-1 ring-accent/50"
+                          : "bg-surface hover:bg-surface-high",
                     )}
                   >
                     <button
