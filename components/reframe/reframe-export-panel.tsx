@@ -45,6 +45,7 @@ function ReframeExportPanelInner({ doc, file, onSetTarget }: Props) {
   const [progress, setProgress] = React.useState<ExportProgress | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
+  const [colourPath, setColourPath] = React.useState<string | null>(null);
   const [result, setResult] = React.useState<{ url: string; name: string; size: number } | null>(
     null,
   );
@@ -77,6 +78,7 @@ function ReframeExportPanelInner({ doc, file, onSetTarget }: Props) {
     setError(null);
     setResult(null);
     setNotice(null);
+    setColourPath(null);
     setProgress({
       fraction: 0,
       framesRendered: 0,
@@ -95,6 +97,7 @@ function ReframeExportPanelInner({ doc, file, onSetTarget }: Props) {
         signal: controller.signal,
         onProgress: setProgress,
         onNotice: setNotice,
+        onColourPath: setColourPath,
       });
       setResult({
         url: URL.createObjectURL(blob),
@@ -209,6 +212,7 @@ function ReframeExportPanelInner({ doc, file, onSetTarget }: Props) {
       {support?.ok === false && (
         <p className="text-xs text-warning">{support.reason}</p>
       )}
+      {colourPath && <p className="text-xs text-text-secondary">{colourPath}</p>}
       {notice && <p className="text-xs text-warning">{notice}</p>}
       {error && <p className="text-xs text-destructive">{error}</p>}
 

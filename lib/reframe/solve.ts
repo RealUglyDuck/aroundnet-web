@@ -215,6 +215,64 @@ export function cropTransform(
   return { scaleX, scaleY, translateX: -crop.x * scaleX, translateY: -crop.y * scaleY };
 }
 
+/** Rotation metadata in degrees clockwise, as containers (and mediabunny) express it. */
+export type SourceRotation = 0 | 90 | 180 | 270;
+
+/**
+ * The column-major 3×3 matrix mapping a normalised output position to a
+ * texture coordinate, for the WebGL export path: `(u, v, 1)ᵀ = M · (px, py, 1)ᵀ`
+ * with both spaces in [0,1]², origin top-left, y down.
+ *
+ * `crop` is in *display* space (post-rotation, the space {@link solveCrop}
+ * works in, rescaled to the decoded sample), while the uploaded texture holds
+ * the *pre-rotation* frame — so the matrix folds the rotation in. Rotation is
+ * not a special case on purpose: iPhone HLG footage is exactly what carries
+ * rotation metadata.
+ *
+ * Kept here, next to {@link cropTransform}, dependency-free and unit-tested
+ * for all four rotations before any GL touches it.
+ */
+export function cropTexMatrix(
+  crop: CropRect,
+  display: { width: number; height: number },
+  rotation: SourceRotation,
+): [number, number, number, number, number, number, number, number, number] {
+  // d = ((crop.x + px·crop.w) / display.w, (crop.y + py·crop.h) / display.h)
+  // is the display-space point; the rotation cases then map display → texture:
+  //   0:   u = d.x       v = d.y
+  //   90:  u = d.y       v = 1 − d.x
+  //   180: u = 1 − d.x   v = 1 − d.y
+  //   270: u = 1 − d.y   v = d.x
+  const X = crop.x / display.width;
+  const W = crop.width / display.width;
+  const Y = crop.y / display.height;
+  const H = crop.height / display.height;
+
+  // Rows of M as [du/dpx, du/dpy, u0] and [dv/dpx, dv/dpy, v0].
+  let u: [number, number, number];
+  let v: [number, number, number];
+  switch (rotation) {
+    case 0:
+      u = [W, 0, X];
+      v = [0, H, Y];
+      break;
+    case 90:
+      u = [0, H, Y];
+      v = [-W, 0, 1 - X];
+      break;
+    case 180:
+      u = [-W, 0, 1 - X];
+      v = [0, -H, 1 - Y];
+      break;
+    case 270:
+      u = [0, -H, 1 - Y];
+      v = [W, 0, X];
+      break;
+  }
+  // Column-major, the layout `uniformMatrix3fv` expects.
+  return [u[0], v[0], 0, u[1], v[1], 0, u[2], v[2], 1];
+}
+
 /** The crop at time `t` expressed in 0–1 source coordinates, for CSS overlays. */
 export function solveCropNormalised(doc: ReframeDoc, t: number): CropRect {
   const rect = solveCrop(doc, t);

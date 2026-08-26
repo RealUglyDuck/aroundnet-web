@@ -182,3 +182,67 @@ assert.ok(solveState(gapKf, 4.001).cx < 0.3, "no jump toward the incoming segmen
 console.log("✓ keyframes placed in a gap still work");
 
 console.log("\nAll solver checks passed.");
+
+/* ── cropTexMatrix: crop + rotation in texture coordinates ─────────────── */
+import { cropTexMatrix, type SourceRotation } from "./solve.ts";
+
+// Apply the column-major mat3 to a normalised output point.
+const applyTex = (
+  m: ReturnType<typeof cropTexMatrix>,
+  px: number,
+  py: number,
+): [number, number] => [
+  m[0] * px + m[3] * py + m[6],
+  m[1] * px + m[4] * py + m[7],
+];
+
+// A distinctive crop inside a 1920×1080 display frame.
+const texCrop = { x: 192, y: 108, width: 384, height: 683 };
+const disp = { width: 1920, height: 1080 };
+// Display-space corners of that crop, normalised.
+const dTL = [192 / 1920, 108 / 1080];
+const dBR = [(192 + 384) / 1920, (108 + 683) / 1080];
+
+// rotation 0: texture coords are display coords.
+{
+  const m = cropTexMatrix(texCrop, disp, 0);
+  const [u0, v0] = applyTex(m, 0, 0);
+  const [u1, v1] = applyTex(m, 1, 1);
+  assert.ok(Math.abs(u0 - dTL[0]) < 1e-12 && Math.abs(v0 - dTL[1]) < 1e-12);
+  assert.ok(Math.abs(u1 - dBR[0]) < 1e-12 && Math.abs(v1 - dBR[1]) < 1e-12);
+}
+// The four rotations follow the display→texture inverse of a clockwise
+// rotation: 90 → (d.y, 1−d.x), 180 → (1−d.x, 1−d.y), 270 → (1−d.y, d.x).
+const expectTex = (rot: SourceRotation, d: number[]): number[] => {
+  switch (rot) {
+    case 0: return [d[0], d[1]];
+    case 90: return [d[1], 1 - d[0]];
+    case 180: return [1 - d[0], 1 - d[1]];
+    case 270: return [1 - d[1], d[0]];
+  }
+};
+for (const rot of [0, 90, 180, 270] as const) {
+  const m = cropTexMatrix(texCrop, disp, rot);
+  for (const [px, py, d] of [
+    [0, 0, dTL],
+    [1, 1, dBR],
+    [1, 0, [dBR[0], dTL[1]]],
+    [0, 1, [dTL[0], dBR[1]]],
+  ] as const) {
+    const [u, v] = applyTex(m, px, py);
+    const [eu, ev] = expectTex(rot, d as number[]);
+    assert.ok(
+      Math.abs(u - eu) < 1e-12 && Math.abs(v - ev) < 1e-12,
+      `rotation ${rot} corner (${px},${py}): got (${u},${v}) want (${eu},${ev})`,
+    );
+  }
+  // A full-frame crop must cover the whole texture for every rotation.
+  const full = cropTexMatrix({ x: 0, y: 0, ...disp }, disp, rot);
+  const corners = [applyTex(full, 0, 0), applyTex(full, 1, 0), applyTex(full, 0, 1), applyTex(full, 1, 1)];
+  const us = corners.map((c) => c[0]).sort((a, b) => a - b);
+  const vs = corners.map((c) => c[1]).sort((a, b) => a - b);
+  assert.ok(us[0] === 0 && us[3] === 1 && vs[0] === 0 && vs[3] === 1, `full frame at ${rot}`);
+}
+console.log("✓ cropTexMatrix rotations");
+
+console.log("All texture-matrix checks passed.");

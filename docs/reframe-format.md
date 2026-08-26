@@ -31,7 +31,10 @@ purpose. Port those two files and you have a compatible implementation.
   "segments": [
     { "id": "seg1_p0q2r", "name": "Point 1", "start": 0.0,  "end": 7.2 },
     { "id": "seg2_z8m4t", "name": "Point 2", "start": 31.5, "end": 39.0 }
-  ]
+  ],
+  // Optional. Absent means the default grade below — a clip keeps its grade
+  // across editors, and pre-grading documents round-trip byte-stable.
+  "grade": { "exposure": 0.3, "saturation": 1.1, "contrast": 1.0, "toneMap": "hable" }
 }
 ```
 
@@ -43,6 +46,7 @@ purpose. Port those two files and you have a compatible implementation.
 | `easing` | Governs the segment **from this keyframe to the next**. The last keyframe's easing is meaningless. |
 | `id` | Editor-local only. Not meaningful across documents; regenerate freely. |
 | `segments[]` | The parts of the source worth keeping, sorted by `start` and never overlapping. Seconds, half-open `[start, end)`. |
+| `grade` | Export colour: `exposure` (stops, applied to linear light *before* tone mapping), `saturation` / `contrast` (CSS-filter semantics, applied after the output OETF), `toneMap` (`hable` \| `reinhard` \| `none`). Default `{0, 1, 1, "hable"}`; a document whose grade equals the default omits the key. |
 
 ### Segments
 
@@ -145,6 +149,70 @@ x = cx * source.width  - cropWidth  / 2
 y = cy * source.height - cropHeight / 2
 ```
 
+## Colour: HDR tone mapping and the grade
+
+HDR (HLG/PQ) sources are tone-mapped to SDR at export by our own pipeline —
+`lib/reframe/tonemap.ts`, run as a WebGL fragment shader — instead of the
+browser's flat built-in conversion. The pipeline, in order:
+
+1. Inverse EOTF (BT.2100 HLG inverse OETF, or the ST 2084 PQ EOTF).
+2. HLG only: the OOTF, `RGB × Ys^(γ−1)` with γ = 1.2 and Ys the BT.2020
+   scene luminance.
+3. Scale into **npl=100 units** (1.0 = 100 nits): ×10 for HLG (1000-nit
+   nominal peak), ×100 for PQ. Anchor: HLG signal 0.75 → 0.2649 → OOTF →
+   0.2031 → **2.03**, i.e. BT.2408's 203-nit diffuse white.
+4. Exposure: × 2^`grade.exposure`, in linear light.
+5. Tone map: ffmpeg-style desaturation (`desat = 2` on BT.2020 luminance),
+   then the operator applied to the **max channel** with the pixel scaled by
+   the ratio — hue-preserving. `hable` is the Uncharted 2 curve normalised so
+   W = 11.2 → 1; `reinhard` is ffmpeg's `x/(x+0.5)·(peak+0.5)/peak`.
+6. BT.2020 → BT.709 primaries **in linear light**, then clamp.
+7. BT.709 OETF (`4.5·L` below 0.018, else `1.099·L^0.45 − 0.099`).
+8. `contrast` then `saturation`, using the CSS filter formulas
+   (`(v−0.5)·c+0.5`; mix toward luma `0.213R+0.715G+0.072B`).
+
+With the default grade this matches the ffmpeg reference
+`zscale=t=linear:npl=100,tonemap=hable:desat=2,zscale=p=bt709:t=bt709:m=rgb:r=full`
+in direction and magnitude (ffmpeg does its own peak detection, so it is not
+bit-exact).
+
+**How the raw signal reaches the GPU** — the part that took two attempts. The
+browser tone-maps HDR frames on *every* image-shaped route: `texImage2D` of a
+`VideoFrame` converts into the context's `unpackColorSpace` (srgb/display-p3
+only, by the WebGL colour-space spec — the legacy
+`UNPACK_COLORSPACE_CONVERSION_WEBGL = NONE` flag does not apply to video),
+`drawImage` converts, and `copyTo({format:"RGBA"})` is defined as
+canvas-equivalent. The one untouched transport is **`VideoFrame.copyTo()`
+with no format option**, which yields the raw YUV planes. The export reads
+those per frame and rebuilds the signal itself in two GPU passes
+(`lib/reframe/webgl-tonemap.ts`): pass A does range expansion + YUV→RGB into
+a full-res RGBA16F framebuffer holding the non-linear R'G'B' signal; pass B
+is the tone-map pipeline above, sampling that framebuffer through the crop
+matrix.
+
+YUV normalisation (in `tonemap.ts`, shared with the emitted GLSL): limited
+range `Y = (V − 16·2^(n−8)) / (219·2^(n−8))`, `C = (V − 128·2^(n−8)) /
+(224·2^(n−8))`; full range `Y = V/(2^n−1)`, `C = (V − 2^(n−1))/(2^n−1)`.
+Kr/Kb: bt2020-ncl 0.2627/0.0593, bt709 0.2126/0.0722, smpte170m 0.299/0.114
+(`R = Y' + 2(1−Kr)Cr`, `B = Y' + 2(1−Kb)Cb`, `G` from the luma identity).
+Chroma is upsampled with centred-siting bilinear. 10/12-bit planes upload as
+`R16UI` with code values in the low bits, per WebCodecs.
+
+The path is gated by **ground truth, not heuristics** (an earlier
+"differs-from-the-2D-path" probe false-passed): before an export commits to
+the GPU path, pass A runs on the first real frame and ~48 scattered,
+deliberately asymmetric texels are compared against the TypeScript reference
+(`yuvPixelToRgb`). Any disagreement — or a null/RGB `frame.format`, meaning
+the browser exposes no raw data — falls back to the old 2D behaviour with a
+notice. `toneMap: "none"` selects that old behaviour deliberately. SDR
+sources never take the shader path and export byte-identically to before.
+
+**Preview honesty:** the on-screen preview draws the `<video>` element, whose
+pixels the browser has already tone-mapped, so it cannot run the shader.
+Contrast and saturation preview exactly (same formulas as step 8); exposure is
+approximated with `brightness()`; the operator is not previewed at all. The
+UI says so under the preview for HDR sources.
+
 ## Porting to Swift (ARoundNet)
 
 ### The model
@@ -235,12 +303,32 @@ Apply the track's `preferredTransform` before this if the source is rotated.
 Prefer (a) unless profiling says otherwise; (b) exists mainly because it avoids
 a CoreImage round-trip per frame on older devices.
 
+### Colour on iOS
+
+`tonemap.ts` is dependency-free for the same reason `solve.ts` is: port it
+verbatim (the constants section at the top is the contract) if the Swift export
+needs to match the web's SDR output. On iOS the cheaper route is usually to let
+AVFoundation do it — route (a)'s CIFilter handler receives linear-light working
+space, so exposure is a plain multiply there, and `CIColorCube` /
+`CIToneMapHeadroom` can express the operator. Whichever route, apply `grade` in
+the same order as the pipeline above: exposure in linear light before the tone
+map, contrast and saturation on the encoded output.
+
 ## Web implementation notes
 
 - Export is `lib/reframe/export.ts`, built on [mediabunny](https://mediabunny.dev):
   demux → WebCodecs decode → crop-draw to an `OffscreenCanvas` → AVC encode →
   MP4 mux. Both the exporter and the on-screen preview call the same
-  `solveCrop`, so the preview is genuinely WYSIWYG.
+  `solveCrop`, so the preview is genuinely WYSIWYG (colour excepted on HDR —
+  see the colour section above).
+- The frame draw goes through the `FrameRenderer` seam
+  (`lib/reframe/frame-renderer.ts`): a raw-plane WebGL renderer for HDR
+  sources (`copyTo()` planes → YUV→RGB pass → tone-map + crop + rotation
+  pass, RGBA16F throughout so 10-bit sources don't band), and a 2D-canvas
+  renderer that is a verbatim lift of the original draw block for everything
+  else. Which one ran is reported under the export button, and `?debug=1`
+  shows the GPU-vs-reference self-tests plus a text diagnosis of the loaded
+  file (frame format, colour tags, copyTo layout, chosen path).
 - Audio is **copied packet-for-packet**, not decoded and re-encoded — free and
   lossless. It is dropped only when the source codec is illegal inside MP4
   (Opus in a WebM, say).

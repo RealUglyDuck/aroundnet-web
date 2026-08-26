@@ -69,6 +69,89 @@ export interface ReframeDoc {
    * written before segments existed deserialises to, so `version` stays 1.
    */
   segments: ReframeSegment[];
+  /**
+   * Colour grade applied at export. Absent means {@link DEFAULT_GRADE}, which
+   * is what every document written before grading existed deserialises to —
+   * `version` stays 1, same policy as `segments`.
+   */
+  grade?: ReframeGrade;
+}
+
+/* ── Colour grade ──────────────────────────────────────────────────────── */
+
+/**
+ * The tone-map operator the exporter runs on HDR sources. `"none"` restores
+ * the pre-grading behaviour: the browser's own HDR→SDR conversion on the 2D
+ * canvas path, which is what used to wash the colour out.
+ */
+export type ReframeToneMap = "hable" | "reinhard" | "none";
+
+export const TONE_MAPS: readonly ReframeToneMap[] = ["hable", "reinhard", "none"];
+
+export interface ReframeGrade {
+  /** Stops, applied to linear light BEFORE tone mapping. */
+  exposure: number;
+  /** CSS `saturate()` amount, applied after the output OETF. */
+  saturation: number;
+  /** CSS `contrast()` amount, applied after the output OETF. */
+  contrast: number;
+  toneMap: ReframeToneMap;
+}
+
+export const DEFAULT_GRADE: ReframeGrade = {
+  exposure: 0,
+  saturation: 1,
+  contrast: 1,
+  toneMap: "hable",
+};
+
+/** The document's grade, defaulted — never null. */
+export function gradeOf(doc: ReframeDoc): ReframeGrade {
+  return doc.grade ?? DEFAULT_GRADE;
+}
+
+export function gradesEqual(a: ReframeGrade, b: ReframeGrade): boolean {
+  return (
+    a.exposure === b.exposure &&
+    a.saturation === b.saturation &&
+    a.contrast === b.contrast &&
+    a.toneMap === b.toneMap
+  );
+}
+
+/**
+ * Patch the grade. When the result equals {@link DEFAULT_GRADE} the key is
+ * dropped entirely, so documents that predate grading round-trip byte-stable.
+ */
+export function setGrade(doc: ReframeDoc, patch: Partial<ReframeGrade>): ReframeDoc {
+  const next = { ...gradeOf(doc), ...patch };
+  if (gradesEqual(next, DEFAULT_GRADE)) {
+    if (doc.grade === undefined) return doc;
+    const rest = { ...doc };
+    delete rest.grade;
+    return rest;
+  }
+  return { ...doc, grade: next };
+}
+
+/**
+ * Read the `grade` of a saved document, clamping and repairing rather than
+ * rejecting — the same policy as {@link parseSegments}. Returns undefined for
+ * anything that resolves to the default, mirroring {@link setGrade}.
+ */
+export function parseGrade(raw: unknown): ReframeGrade | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const g = raw as Partial<ReframeGrade>;
+  const grade: ReframeGrade = {
+    exposure: typeof g.exposure === "number" ? clamp(g.exposure, -4, 4) : DEFAULT_GRADE.exposure,
+    saturation:
+      typeof g.saturation === "number" ? clamp(g.saturation, 0, 3) : DEFAULT_GRADE.saturation,
+    contrast: typeof g.contrast === "number" ? clamp(g.contrast, 0, 3) : DEFAULT_GRADE.contrast,
+    toneMap: TONE_MAPS.includes(g.toneMap as ReframeToneMap)
+      ? (g.toneMap as ReframeToneMap)
+      : DEFAULT_GRADE.toneMap,
+  };
+  return gradesEqual(grade, DEFAULT_GRADE) ? undefined : grade;
 }
 
 /**
@@ -231,7 +314,8 @@ export function parseDoc(json: string): ReframeDoc {
     keyframes,
     segments: [],
   };
-  return { ...doc, segments: parseSegments(doc, d.segments) };
+  const grade = parseGrade(d.grade);
+  return { ...doc, segments: parseSegments(doc, d.segments), ...(grade ? { grade } : {}) };
 }
 
 /**

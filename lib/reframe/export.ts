@@ -7,6 +7,10 @@
  * is copied packet-for-packet rather than decoded and re-encoded, so it costs
  * nothing and loses no quality.
  *
+ * HDR (HLG/PQ) sources take a raw-plane WebGL tone-map path instead of the
+ * browser's flat drawImage conversion — see frame-renderer.ts for the cascade
+ * and the ground-truth verification that gates it.
+ *
  * Everything is hardware-accelerated where the browser allows, so this runs
  * faster than real time on typical footage.
  */
@@ -29,7 +33,8 @@ import {
   type Quality,
 } from "mediabunny";
 import { clamp, exportRanges, minSegmentDuration, type ReframeDoc } from "./model.ts";
-import { cropTransform, solveCrop } from "./solve.ts";
+import { solveCrop } from "./solve.ts";
+import { createFrameRenderer, type FrameRenderer } from "./frame-renderer.ts";
 import {
   copyAudioPackets,
   createReelAudioSource,
@@ -74,6 +79,11 @@ export interface ExportOptions {
   onProgress?: (progress: ExportProgress) => void;
   /** Non-fatal notices, e.g. audio being dropped for an unsupported codec. */
   onNotice?: (message: string) => void;
+  /**
+   * Reports which colour path this export ran (WebGL tone map vs browser
+   * conversion) — the only way to know without eyeballing pixels.
+   */
+  onColourPath?: (label: string) => void;
   signal?: AbortSignal;
 }
 
@@ -110,6 +120,7 @@ export async function exportReframedVideo({
   trim,
   onProgress,
   onNotice,
+  onColourPath,
   signal,
 }: ExportOptions): Promise<Blob> {
   const duration = doc.source.duration;
@@ -135,16 +146,28 @@ export async function exportReframedVideo({
     target: new BufferTarget(),
   });
 
+  let renderer: FrameRenderer | null = null;
   try {
     const videoTrack = await input.getPrimaryVideoTrack();
     if (!videoTrack) throw new Error("The source file has no video track.");
 
-    const canvas = new OffscreenCanvas(doc.target.width, doc.target.height);
-    const ctx = canvas.getContext("2d", { alpha: false });
-    if (!ctx) throw new Error("Could not create a 2D canvas context.");
-    ctx.imageSmoothingQuality = "high";
+    // The renderer choice depends on the source's transfer function AND on a
+    // ground-truth verification of a real decoded frame (see
+    // frame-renderer.ts), so decode the first frame up front — its canvas
+    // must exist before the track is added.
+    const colorSpace = await videoTrack.getColorSpace().catch(() => null);
+    const sink = new VideoSampleSink(videoTrack);
+    const firstSample = await sink.getSample(resolved[0].start);
+    if (!firstSample) throw new Error("Could not decode the first frame of the export range.");
+    try {
+      renderer = await createFrameRenderer({ doc, sample: firstSample, colorSpace, onNotice });
+    } finally {
+      firstSample.close();
+    }
+    onColourPath?.(renderer.label);
+    console.info(`reframe export — ${renderer.label}`);
 
-    const videoSource = new CanvasSource(canvas, {
+    const videoSource = new CanvasSource(renderer.canvas, {
       codec: "avc",
       quality: QUALITY_MAP[quality],
       keyFrameInterval: 2,
@@ -168,7 +191,6 @@ export async function exportReframedVideo({
     await output.start();
 
     /* ── Video: decode → crop → encode, one range after another ─────── */
-    const sink = new VideoSampleSink(videoTrack);
     let framesRendered = 0;
     let outOffset = 0;
 
@@ -201,16 +223,10 @@ export async function exportReframedVideo({
             height: crop.height * scaleY,
           };
 
-          // Crop via a canvas transform that maps the crop rect onto the whole
-          // canvas, then draw the frame whole. This uses draw()'s plain
-          // destination-only path — the same shape as the preview's drawImage —
-          // instead of its source-rect overload, while still letting mediabunny
-          // apply any rotation metadata.
-          const t = cropTransform(scaled, doc.target);
-          ctx.save();
-          ctx.setTransform(t.scaleX, 0, 0, t.scaleY, t.translateX, t.translateY);
-          sample.draw(ctx, 0, 0, sample.displayWidth, sample.displayHeight);
-          ctx.restore();
+          // Draw the frame through the crop. Which pipeline that is — the
+          // browser's 2D conversion or the raw-plane HDR tone map — was
+          // decided once, up front, by createFrameRenderer.
+          await renderer.render(sample, scaled);
 
           await videoSource.add(
             outTs,
@@ -285,6 +301,7 @@ export async function exportReframedVideo({
     }
     throw error;
   } finally {
+    renderer?.dispose();
     input.dispose();
   }
 }

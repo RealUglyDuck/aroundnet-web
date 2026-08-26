@@ -20,6 +20,8 @@ import { ReframeTimeline } from "./reframe-timeline";
 import { ReframeInspector } from "./reframe-inspector";
 import { ReframeExportPanel } from "./reframe-export-panel";
 import { ReframeSegmentsPanel } from "./reframe-segments-panel";
+import { ReframeGradePanel } from "./reframe-grade-panel";
+import { ReframeDebugPanel } from "./reframe-debug-panel";
 import {
   NO_MARK,
   clearSegments,
@@ -37,6 +39,7 @@ import {
   removeKeyframe,
   removeSegment,
   serializeDoc,
+  setGrade,
   updateKeyframe,
   updateSegment,
   upsertKeyframe,
@@ -44,6 +47,7 @@ import {
   type MarkResult,
   type MarkState,
   type ReframeDoc,
+  type ReframeGrade,
 } from "@/lib/reframe/model";
 import { clampCenter, solveState } from "@/lib/reframe/solve";
 import { probeVideo } from "@/lib/reframe/probe";
@@ -95,6 +99,11 @@ export function ReframeEditor() {
   const [future, setFuture] = React.useState<Snapshot[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // ?debug=1 shows the GPU colour self-test panel. Read lazily so the page
+  // stays static-export friendly (no useSearchParams / Suspense dance).
+  const [debug] = React.useState(
+    () => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debug"),
+  );
 
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const srcRef = React.useRef<string | null>(null);
@@ -453,6 +462,15 @@ export function ReframeEditor() {
     [commit],
   );
 
+  /** Grade edits: one undo entry per slider gesture, like moveKeyframe. */
+  const changeGrade = React.useCallback(
+    (patch: Partial<ReframeGrade>, first: boolean) => {
+      const current = docRef.current;
+      if (current) commit(setGrade(current, patch), { transient: !first });
+    },
+    [commit],
+  );
+
   /* ── Segments ────────────────────────────────────────────────────────── */
 
   const applyMark = React.useCallback(
@@ -758,9 +776,9 @@ export function ReframeEditor() {
             {doc.source.hdr ? " · HDR" : ""}
           </p>
           {doc.source.hdr && (
-            <p className="mt-1 text-xs text-warning">
-              HDR source. Export draws every frame through an SDR canvas, which tone-maps
-              it — expect flatter colour than the original.
+            <p className="mt-1 text-xs text-text-secondary">
+              HDR source. The export tone-maps it to SDR itself (Colour panel); if this
+              browser can&rsquo;t, it falls back to the flatter built-in conversion and says so.
             </p>
           )}
         </div>
@@ -925,6 +943,12 @@ export function ReframeEditor() {
               playing={playing}
               className="mx-auto w-full max-w-[220px] rounded-card bg-black"
             />
+            {doc.source.hdr && (
+              <p className="mt-1.5 text-center text-[11px] leading-snug text-text-secondary">
+                HDR source: preview approximates the export. Exposure and the tone map
+                only take full effect in the file.
+              </p>
+            )}
           </div>
 
           <ReframeInspector
@@ -938,6 +962,8 @@ export function ReframeEditor() {
             onSetZoom={setZoomAtPlayhead}
             onAddAtPlayhead={addAtPlayhead}
           />
+
+          <ReframeGradePanel doc={doc} onChangeGrade={changeGrade} />
 
           <ReframeSegmentsPanel
             doc={doc}
@@ -953,6 +979,8 @@ export function ReframeEditor() {
           />
 
           <ReframeExportPanel doc={doc} file={file} onSetTarget={setTarget} />
+
+          {debug && <ReframeDebugPanel file={file} />}
         </aside>
       </div>
     </div>

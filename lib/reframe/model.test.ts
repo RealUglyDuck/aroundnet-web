@@ -276,3 +276,33 @@ assert.equal(reelToSourceTime(blank, 42), 42);
 console.log("✓ reel time mapping");
 
 console.log("\nAll model checks passed.");
+
+/* ── Grade: additive, optional, byte-stable back-compat ────────────────── */
+import { DEFAULT_GRADE, gradeOf, parseGrade, setGrade } from "./model.ts";
+
+{
+  const base = createDoc({ width: 1920, height: 1080, duration: 10, name: "t.mp4", frameRate: 30 });
+  // No grade key → the default, and the key stays absent.
+  assert.deepEqual(gradeOf(base), DEFAULT_GRADE);
+  assert.ok(!("grade" in base));
+  // Setting a real value stores it; patching back to default drops the key,
+  // so pre-grading documents round-trip byte-stable.
+  const graded = setGrade(base, { exposure: 0.5 });
+  assert.equal(graded.grade?.exposure, 0.5);
+  const reverted = setGrade(graded, { exposure: 0 });
+  assert.ok(!("grade" in reverted), "default grade drops the key");
+  assert.equal(setGrade(base, {}), base, "no-op patch returns the same doc");
+  // Serialise → parse round-trips the grade, and repairs junk.
+  const parsed = parseDoc(serializeDoc(graded));
+  assert.deepEqual(parsed.grade, graded.grade);
+  const noGrade = parseDoc(serializeDoc(base));
+  assert.ok(!("grade" in noGrade), "absent grade stays absent through parse");
+  assert.equal(parseGrade(undefined), undefined);
+  assert.equal(parseGrade({ exposure: 0, saturation: 1, contrast: 1, toneMap: "hable" }), undefined);
+  assert.deepEqual(parseGrade({ exposure: 99, toneMap: "sepia" }), {
+    exposure: 4, saturation: 1, contrast: 1, toneMap: "hable",
+  });
+  console.log("✓ grade field");
+}
+
+console.log("All grade checks passed.");
