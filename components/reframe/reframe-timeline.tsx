@@ -187,6 +187,28 @@ export function ReframeTimeline({
     [duration, minView, setViewClamped],
   );
 
+  /**
+   * Zoom held on the playhead, for the buttons — the wheel has the pointer to
+   * aim with, but a button press has only the playhead, which is what you are
+   * looking at anyway. It keeps its position on screen, so the frame you were
+   * inspecting doesn't slide away as the ruler grows.
+   *
+   * If the playhead is off-screen (you panned away while paused) it is pulled
+   * to the middle instead, since zooming toward an edge it isn't on would
+   * just be a lurch to nowhere.
+   */
+  const zoomAtPlayhead = React.useCallback(
+    (factor: number) => {
+      const { start, span } = viewRef.current;
+      const head = toDisplay(currentTime);
+      const ratio = span > 0 ? (head - start) / span : 0.5;
+      const anchor = ratio < 0 || ratio > 1 ? 0.5 : ratio;
+      const nextSpan = clamp(span * factor, minView, duration);
+      setViewClamped(head - anchor * nextSpan, nextSpan);
+    },
+    [currentTime, duration, minView, setViewClamped, toDisplay],
+  );
+
   // Native listener: React's wheel handler is passive, so it can't
   // preventDefault, and the page would scroll while zooming.
   React.useEffect(() => {
@@ -390,10 +412,10 @@ export function ReframeTimeline({
             {doc.keyframes.length} keyframe{doc.keyframes.length === 1 ? "" : "s"} ·{" "}
             {zoomed ? `${formatTimecode(view.span)} shown` : formatTimecode(duration)}
           </span>
-          <TimelineButton onClick={() => zoomBy(1 / 1.8)} label="Zoom in">
+          <TimelineButton onClick={() => zoomAtPlayhead(1 / 1.8)} label="Zoom in on playhead">
             <ZoomIn className="h-3.5 w-3.5" />
           </TimelineButton>
-          <TimelineButton onClick={() => zoomBy(1.8)} label="Zoom out">
+          <TimelineButton onClick={() => zoomAtPlayhead(1.8)} label="Zoom out from playhead">
             <ZoomOut className="h-3.5 w-3.5" />
           </TimelineButton>
           <TimelineButton
