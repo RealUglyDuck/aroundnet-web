@@ -41,14 +41,16 @@ export function ReframePreview({ doc, videoRef, currentTime, playing, className 
     const sx = video.videoWidth / d.source.width;
     const sy = video.videoHeight / d.source.height;
 
-    // The grade's post-OETF stage, previewed as a canvas filter. Contrast and
-    // saturation match the export exactly (same formulas); exposure is only an
-    // approximation on HDR, because here it multiplies pixels the browser has
-    // already tone-mapped instead of linear light. The tone-map operator
-    // itself cannot be previewed at all: this canvas draws the <video>
-    // element, whose pixels are already converted — running the shader on
-    // them would be nonsense. ctx.filter is context state and leaks, so it is
-    // always reset.
+    // The grade's post-OETF stage, previewed as a canvas filter. No editor
+    // control writes a grade any more (HDR is tone-mapped automatically), so
+    // this is a no-op unless a loaded document carries one — which the format
+    // still supports. Contrast and saturation match the export exactly (same
+    // formulas); exposure is only an approximation on HDR, because here it
+    // multiplies pixels the browser has already tone-mapped instead of linear
+    // light. The tone-map operator itself cannot be previewed at all: this
+    // canvas draws the <video> element, whose pixels are already converted —
+    // running the shader on them would be nonsense. ctx.filter is context
+    // state and leaks, so it is always reset.
     const filter = cssGradeFilter(gradeOf(d));
     if (filter) ctx.filter = filter;
     ctx.drawImage(

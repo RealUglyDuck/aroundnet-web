@@ -20,7 +20,6 @@ import { ReframeTimeline } from "./reframe-timeline";
 import { ReframeInspector } from "./reframe-inspector";
 import { ReframeExportPanel } from "./reframe-export-panel";
 import { ReframeSegmentsPanel } from "./reframe-segments-panel";
-import { ReframeGradePanel } from "./reframe-grade-panel";
 import { ReframeDebugPanel } from "./reframe-debug-panel";
 import {
   NO_MARK,
@@ -39,7 +38,6 @@ import {
   removeKeyframe,
   removeSegment,
   serializeDoc,
-  setGrade,
   updateKeyframe,
   updateSegment,
   upsertKeyframe,
@@ -47,7 +45,6 @@ import {
   type MarkResult,
   type MarkState,
   type ReframeDoc,
-  type ReframeGrade,
 } from "@/lib/reframe/model";
 import { clampCenter, solveState } from "@/lib/reframe/solve";
 import { probeVideo } from "@/lib/reframe/probe";
@@ -462,15 +459,6 @@ export function ReframeEditor() {
     [commit],
   );
 
-  /** Grade edits: one undo entry per slider gesture, like moveKeyframe. */
-  const changeGrade = React.useCallback(
-    (patch: Partial<ReframeGrade>, first: boolean) => {
-      const current = docRef.current;
-      if (current) commit(setGrade(current, patch), { transient: !first });
-    },
-    [commit],
-  );
-
   /* ── Segments ────────────────────────────────────────────────────────── */
 
   const applyMark = React.useCallback(
@@ -777,8 +765,8 @@ export function ReframeEditor() {
           </p>
           {doc.source.hdr && (
             <p className="mt-1 text-xs text-text-secondary">
-              HDR source. The export tone-maps it to SDR itself (Colour panel); if this
-              browser can&rsquo;t, it falls back to the flatter built-in conversion and says so.
+              HDR source. The export tone-maps it to SDR automatically; if this browser
+              can&rsquo;t, it falls back to the flatter built-in conversion and says so.
             </p>
           )}
         </div>
@@ -945,8 +933,8 @@ export function ReframeEditor() {
             />
             {doc.source.hdr && (
               <p className="mt-1.5 text-center text-[11px] leading-snug text-text-secondary">
-                HDR source: preview approximates the export. Exposure and the tone map
-                only take full effect in the file.
+                HDR source: this preview is the browser&rsquo;s own flat conversion. The
+                exported file is tone-mapped and looks richer.
               </p>
             )}
           </div>
@@ -962,8 +950,6 @@ export function ReframeEditor() {
             onSetZoom={setZoomAtPlayhead}
             onAddAtPlayhead={addAtPlayhead}
           />
-
-          <ReframeGradePanel doc={doc} onChangeGrade={changeGrade} />
 
           <ReframeSegmentsPanel
             doc={doc}

@@ -46,7 +46,7 @@ purpose. Port those two files and you have a compatible implementation.
 | `easing` | Governs the segment **from this keyframe to the next**. The last keyframe's easing is meaningless. |
 | `id` | Editor-local only. Not meaningful across documents; regenerate freely. |
 | `segments[]` | The parts of the source worth keeping, sorted by `start` and never overlapping. Seconds, half-open `[start, end)`. |
-| `grade` | Export colour: `exposure` (stops, applied to linear light *before* tone mapping), `saturation` / `contrast` (CSS-filter semantics, applied after the output OETF), `toneMap` (`hable` \| `reinhard` \| `none`). Default `{0, 1, 1, "hable"}`; a document whose grade equals the default omits the key. |
+| `grade` | Export colour: `exposure` (stops, applied to linear light *before* tone mapping), `saturation` / `contrast` (CSS-filter semantics, applied after the output OETF), `toneMap` (`hable` \| `reinhard` \| `none`). Default `{0, 1, 1, "hable"}`; a document whose grade equals the default omits the key. **The editor exposes no colour controls** — HDR is detected and tone-mapped automatically — so documents it writes never carry this key; a hand-written or ported document that does is still honoured at export. |
 
 ### Segments
 
@@ -208,10 +208,11 @@ notice. `toneMap: "none"` selects that old behaviour deliberately. SDR
 sources never take the shader path and export byte-identically to before.
 
 **Preview honesty:** the on-screen preview draws the `<video>` element, whose
-pixels the browser has already tone-mapped, so it cannot run the shader.
-Contrast and saturation preview exactly (same formulas as step 8); exposure is
-approximated with `brightness()`; the operator is not previewed at all. The
-UI says so under the preview for HDR sources.
+pixels the browser has already tone-mapped, so it cannot run the shader — an
+HDR preview is the browser's flat conversion and the exported file looks
+richer. The UI says so under the preview for HDR sources. (If a document
+carries a `grade`, its contrast and saturation preview exactly — same formulas
+as step 8 — and exposure is approximated with `brightness()`.)
 
 ## Porting to Swift (ARoundNet)
 

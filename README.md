@@ -58,9 +58,9 @@ A standalone tool for turning a landscape clip into a vertical one: scrub to a
 moment, tap where the action is, and the 9:16 window centres there (stopping at
 the source edge rather than showing black bars). Each tap is a keyframe; two or
 more animate between each other. Export renders a real MP4 in the browser via
-WebCodecs — no upload, no server. HDR (iPhone HLG) footage is tone-mapped to
-SDR by our own WebGL shader rather than the browser's flat conversion, with a
-Colour panel (exposure/contrast/saturation/tone map) saved in the document.
+WebCodecs — no upload, no server. HDR (iPhone HLG) footage is detected
+automatically and tone-mapped to SDR by our own WebGL shader rather than the
+browser's flat conversion — no colour controls to get wrong.
 
 The timeline is a zoomable detail track over a full-clip overview strip (scroll
 to zoom, shift-scroll or drag the lit window to pan).
