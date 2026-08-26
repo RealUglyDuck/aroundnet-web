@@ -4,8 +4,14 @@ import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
-import { totalSegmentDuration, type ReframeDoc } from "@/lib/reframe/model";
+import {
+  TARGET_PRESETS,
+  totalSegmentDuration,
+  type ReframeDoc,
+  type TargetPresetKey,
+} from "@/lib/reframe/model";
 import {
   ExportCanceledError,
   exportReframedVideo,
@@ -20,9 +26,21 @@ interface Props {
   file: File;
   quality: ExportQuality;
   includeAudio: boolean;
+  /** Why this browser can't export at all, if it can't. */
+  unsupportedReason?: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onSetTarget: (target: { width: number; height: number }) => void;
+  onSetQuality: (quality: ExportQuality) => void;
+  onSetIncludeAudio: (include: boolean) => void;
 }
+
+const QUALITY_LABELS: Record<ExportQuality, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  veryHigh: "Very high",
+};
 
 const STAGE_LABELS: Record<ExportProgress["stage"], string> = {
   video: "Rendering video",
@@ -37,35 +55,40 @@ interface Result {
 }
 
 /**
- * The export overlay: press Export and this takes over the screen until the
- * file is ready.
+ * The whole export, start to finish, in one card: settings → progress →
+ * the finished file.
  *
- * Modal on purpose. An export mutates nothing, but it reads the document for
- * several minutes while the editor would happily keep changing it — and a
- * keyframe moved mid-render lands in some frames and not others. Blocking is
- * simpler to reason about than snapshotting, and it also stops the export
- * being forgotten in a sidebar while the user edits on.
+ * Modal from the moment rendering starts. An export mutates nothing, but it
+ * reads the document for several minutes while the editor would happily keep
+ * changing it — and a keyframe moved mid-render lands in some frames and not
+ * others. Blocking is simpler to reason about than snapshotting, and it also
+ * stops the export being forgotten in a sidebar while the user edits on.
  *
  * While rendering there is deliberately no way out but Cancel: no Escape, no
  * click-outside. Those read as "hide this", and a hidden-but-running export
  * that silently finishes is worse than a modal. The footer carries the one
- * exit — Cancel while rendering, Close once there is something to keep.
+ * exit at every step.
  */
 export function ReframeExportDialog({
   doc,
   file,
   quality,
   includeAudio,
+  unsupportedReason,
   open,
   onOpenChange,
+  onSetTarget,
+  onSetQuality,
+  onSetIncludeAudio,
 }: Props) {
+  const [started, setStarted] = React.useState(false);
   const [progress, setProgress] = React.useState<ExportProgress | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
   const [colourPath, setColourPath] = React.useState<string | null>(null);
   const [result, setResult] = React.useState<Result | null>(null);
   // Closing the dialog is the only thing that throws the finished file away —
-  // it lives in memory, not on disk — so an undownloaded result asks first.
+  // it lives in memory, not on disk — so an undownloaded result warns once.
   const [downloaded, setDownloaded] = React.useState(false);
   const [warnedUnsaved, setWarnedUnsaved] = React.useState(false);
   const abortRef = React.useRef<AbortController | null>(null);
@@ -81,11 +104,12 @@ export function ReframeExportDialog({
     };
   }, []);
 
-  // One run per mount — the editor keys this component by run number, so
-  // every Export press gets a fresh instance and no state can leak from the
-  // previous render. Everything below is async, so nothing is set
+  // One run per instance — the editor keys this component by run number, so
+  // every Export press gets a clean dialog and `started` only ever goes
+  // false → true once. Everything below is async, so nothing is set
   // synchronously during the effect.
   React.useEffect(() => {
+    if (!started) return;
     const controller = new AbortController();
     abortRef.current = controller;
     let alive = true;
@@ -121,22 +145,32 @@ export function ReframeExportDialog({
       alive = false;
       controller.abort();
     };
-    // Runs once, on mount. The export uses the document as it was when Export
-    // was pressed and must not restart because something re-rendered.
+    // Settings are read once, when Start is pressed; the run must not restart
+    // because something re-rendered.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [started]);
 
   // Not `progress !== null`: progress stays null through the first frame's
   // decode and colour probe, and the dialog must already be un-dismissable
   // there — otherwise Escape hides a render that keeps going.
-  const running = !result && !error;
+  const running = started && !result && !error;
   const isReel = doc.segments.length > 1;
   const kept = doc.segments.length > 0 ? totalSegmentDuration(doc) : doc.source.duration;
   const percent = progress ? Math.round(progress.fraction * 100) : 0;
+  const presetKey = (Object.keys(TARGET_PRESETS) as TargetPresetKey[]).find(
+    (k) =>
+      TARGET_PRESETS[k].width === doc.target.width &&
+      TARGET_PRESETS[k].height === doc.target.height,
+  );
+  // Shown in place rather than by grimly disabling the header button: this is
+  // where someone looks when they want to export.
+  const blockedReason =
+    doc.keyframes.length === 0
+      ? "Add at least one keyframe before exporting — tap the video to place one."
+      : unsupportedReason;
 
   /**
-   * Close, but warn once first if the finished file was never downloaded —
-   * it lives in memory, so closing is the one thing that throws it away.
+   * Close, but warn once first if the finished file was never downloaded.
    * A second attempt goes through: the reminder is a nudge, not a gate.
    */
   const requestClose = () => {
@@ -152,7 +186,6 @@ export function ReframeExportDialog({
       open={open}
       onOpenChange={(next) => {
         if (next) return;
-        // Closing is only ever allowed when nothing is rendering.
         if (running) return;
         requestClose();
       }}
@@ -166,19 +199,76 @@ export function ReframeExportDialog({
           onInteractOutside={(e) => running && e.preventDefault()}
         >
           <DialogPrimitive.Title className="text-lg font-semibold text-text-primary">
-            {result ? "Export complete" : error ? "Export failed" : "Exporting"}
+            {result ? "Export complete" : error ? "Export failed" : started ? "Exporting" : "Export"}
           </DialogPrimitive.Title>
           <DialogPrimitive.Description className="mt-1 text-sm text-text-secondary">
             {result
               ? result.name
               : error
                 ? "Nothing was saved."
-                : isReel
-                  ? `${doc.segments.length} segments · ${formatTimecode(kept)} · ${doc.target.width}×${doc.target.height}`
-                  : `${formatTimecode(kept)} · ${doc.target.width}×${doc.target.height}`}
+                : `${isReel ? `${doc.segments.length} segments · ` : ""}${formatTimecode(kept)} · ${doc.target.width}×${doc.target.height}`}
           </DialogPrimitive.Description>
 
-          {!result && !error && (
+          {/* ── Settings ─────────────────────────────────────────────── */}
+          {!started && (
+            <div className="mt-5 space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block space-y-1">
+                  <span className="text-xs text-text-secondary">Resolution</span>
+                  <Select
+                    aria-label="Output resolution"
+                    value={presetKey ?? ""}
+                    onChange={(e) =>
+                      onSetTarget(TARGET_PRESETS[e.target.value as TargetPresetKey])
+                    }
+                    className="py-2 text-sm"
+                  >
+                    {!presetKey && (
+                      <option value="">
+                        {doc.target.width}×{doc.target.height}
+                      </option>
+                    )}
+                    {(Object.keys(TARGET_PRESETS) as TargetPresetKey[]).map((k) => (
+                      <option key={k} value={k}>
+                        {TARGET_PRESETS[k].width}×{TARGET_PRESETS[k].height}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+
+                <label className="block space-y-1">
+                  <span className="text-xs text-text-secondary">Quality</span>
+                  <Select
+                    aria-label="Quality"
+                    value={quality}
+                    onChange={(e) => onSetQuality(e.target.value as ExportQuality)}
+                    className="py-2 text-sm"
+                  >
+                    {(Object.keys(QUALITY_LABELS) as ExportQuality[]).map((q) => (
+                      <option key={q} value={q}>
+                        {QUALITY_LABELS[q]}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+              </div>
+
+              <label className="flex items-center gap-2 text-sm text-text-secondary">
+                <input
+                  type="checkbox"
+                  checked={includeAudio}
+                  onChange={(e) => onSetIncludeAudio(e.target.checked)}
+                  className="accent-accent"
+                />
+                Keep original audio
+              </label>
+
+              {blockedReason && <p className="text-xs text-warning">{blockedReason}</p>}
+            </div>
+          )}
+
+          {/* ── Progress ─────────────────────────────────────────────── */}
+          {running && (
             <div className="mt-5 space-y-3">
               <div className="h-2 w-full overflow-hidden rounded-pill bg-surface">
                 <div
@@ -206,6 +296,7 @@ export function ReframeExportDialog({
             </div>
           )}
 
+          {/* ── Result ───────────────────────────────────────────────── */}
           {result && (
             <div className="mt-4 space-y-3">
               {/* No autoplay: autoplay would have to be muted, and hearing the
@@ -245,8 +336,21 @@ export function ReframeExportDialog({
             </p>
           )}
 
-          <div className="mt-4">
-            {running ? (
+          <div className="mt-4 flex gap-2">
+            {!started ? (
+              <>
+                <Button variant="secondary" className="flex-1" onClick={() => onOpenChange(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  className="flex-[2]"
+                  disabled={Boolean(blockedReason)}
+                  onClick={() => setStarted(true)}
+                >
+                  Start export
+                </Button>
+              </>
+            ) : running ? (
               <Button variant="secondary" fullWidth onClick={() => abortRef.current?.abort()}>
                 Cancel
               </Button>

@@ -19,7 +19,6 @@ import { ReframeStage } from "./reframe-stage";
 import { ReframePreview } from "./reframe-preview";
 import { ReframeTimeline } from "./reframe-timeline";
 import { ReframeInspector } from "./reframe-inspector";
-import { ReframeExportPanel } from "./reframe-export-panel";
 import { ReframeExportDialog } from "./reframe-export-dialog";
 import { ReframeSegmentsPanel } from "./reframe-segments-panel";
 import { ReframeDebugPanel } from "./reframe-debug-panel";
@@ -834,22 +833,18 @@ export function ReframeEditor() {
 
           {/* The primary action, set apart from the document/file controls. */}
           <div className="ml-1 h-6 w-px bg-divider" aria-hidden />
+          {/* Deliberately never disabled: the dialog is where someone looks
+              when they want to export, so it is also where "you need a
+              keyframe first" belongs — a dead button explains nothing. */}
           <Button
             size="sm"
             onClick={() => {
               setExportRun((n) => n + 1);
               setExportOpen(true);
             }}
-            disabled={doc.keyframes.length === 0 || support?.ok === false}
-            title={
-              doc.keyframes.length === 0
-                ? "Add at least one keyframe to export."
-                : support?.ok === false
-                  ? support.reason
-                  : `Export ${doc.target.width}×${doc.target.height}${
-                      doc.segments.length > 1 ? ` · ${doc.segments.length} segments` : ""
-                    }`
-            }
+            title={`Export ${doc.target.width}×${doc.target.height}${
+              doc.segments.length > 1 ? ` · ${doc.segments.length} segments` : ""
+            }`}
           >
             <Download className="h-4 w-4" /> Export
           </Button>
@@ -1013,17 +1008,6 @@ export function ReframeEditor() {
             onClearAll={clearAllSegments}
           />
 
-          <ReframeExportPanel
-            doc={doc}
-            quality={quality}
-            includeAudio={includeAudio}
-            unsupportedReason={support?.ok === false ? support.reason : undefined}
-            disabled={exportOpen}
-            onSetTarget={setTarget}
-            onSetQuality={setQuality}
-            onSetIncludeAudio={setIncludeAudio}
-          />
-
           {debug && <ReframeDebugPanel file={file} />}
         </aside>
       </div>
@@ -1037,8 +1021,12 @@ export function ReframeEditor() {
           file={file}
           quality={quality}
           includeAudio={includeAudio}
+          unsupportedReason={support?.ok === false ? support.reason : undefined}
           open={exportOpen}
           onOpenChange={setExportOpen}
+          onSetTarget={setTarget}
+          onSetQuality={setQuality}
+          onSetIncludeAudio={setIncludeAudio}
         />
       )}
     </div>

@@ -344,15 +344,16 @@ map, contrast and saturation on the encoded output.
   but not shortened — the leftover fractional packet at each join is an audible
   click. A single contiguous range still takes the free packet-copy path.
 - Needs WebCodecs: Chrome, Edge, or Safari 16.4+. `checkExportSupport()` probes
-  for it and the header's Export button disables itself with a reason when it
-  is missing.
-- Export is a **modal run**: the header button opens
-  `reframe-export-dialog.tsx`, which blocks the editor until the file is ready
-  and then offers the result inline (preview + download). The render reads the
-  document for minutes while the editor could otherwise keep mutating it — a
-  keyframe moved mid-render would land in some frames and not others — so
-  blocking is both simpler than snapshotting and honest about what is
-  happening. The dialog cannot be dismissed while rendering (no X, Escape or
-  click-outside; only Cancel), and the editor's window-level shortcuts bail
-  out while it is open. Resolution, quality and audio stay in the sidebar's
-  "Export settings".
+  for it and the reason is shown in the export dialog, next to a disabled
+  Start button — the header's Export button always opens, because a dead
+  button explains nothing.
+- The whole export lives in one card, `reframe-export-dialog.tsx`, opened by
+  the header button: **settings** (resolution, quality, audio) → **progress**
+  → **the finished file** (preview + download). It is modal once rendering
+  starts, because the render reads the document for minutes while the editor
+  could otherwise keep mutating it — a keyframe moved mid-render would land in
+  some frames and not others — so blocking is both simpler than snapshotting
+  and honest about what is happening. While rendering it cannot be dismissed
+  (no Escape or click-outside; only Cancel), and the editor's window-level
+  shortcuts bail out while it is open. Closing with an undownloaded result
+  warns once, since the file only exists in memory.

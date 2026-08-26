@@ -121,7 +121,7 @@ app/                    routes (all client components)
 components/             design-system UI + feature components
   ui/                   Button, Card, Chip, Dialog, Tabs, …
   day/                  group + bracket setup dialogs
-  reframe/             stage, preview, timeline, inspector, export panel
+  reframe/             stage, preview, timeline, inspector, export dialog
 lib/
   supabase/            client, queries, mutations, edge-function wrappers, realtime, types
   hooks/               useTournament (load + realtime)
