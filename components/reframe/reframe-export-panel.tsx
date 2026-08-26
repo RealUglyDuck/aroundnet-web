@@ -1,29 +1,24 @@
 "use client";
 
 import * as React from "react";
-import { Download } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/input";
 import {
   TARGET_PRESETS,
-  totalSegmentDuration,
   type ReframeDoc,
   type TargetPresetKey,
 } from "@/lib/reframe/model";
-import {
-  ExportCanceledError,
-  checkExportSupport,
-  exportReframedVideo,
-  suggestedFilename,
-  type ExportProgress,
-  type ExportQuality,
-} from "@/lib/reframe/export";
-import { formatBytes, formatTimecode } from "@/lib/reframe/format";
+import type { ExportQuality } from "@/lib/reframe/export";
 
 interface Props {
   doc: ReframeDoc;
-  file: File;
+  quality: ExportQuality;
+  includeAudio: boolean;
+  /** Why export is unavailable in this browser, if it is. */
+  unsupportedReason?: string;
+  disabled: boolean;
   onSetTarget: (target: { width: number; height: number }) => void;
+  onSetQuality: (quality: ExportQuality) => void;
+  onSetIncludeAudio: (include: boolean) => void;
 }
 
 const QUALITY_LABELS: Record<ExportQuality, string> = {
@@ -33,103 +28,37 @@ const QUALITY_LABELS: Record<ExportQuality, string> = {
   veryHigh: "Very high",
 };
 
-const STAGE_LABELS: Record<ExportProgress["stage"], string> = {
-  video: "Rendering video",
-  audio: "Copying audio",
-  finalizing: "Finalising file",
-};
-
-function ReframeExportPanelInner({ doc, file, onSetTarget }: Props) {
-  const [quality, setQuality] = React.useState<ExportQuality>("high");
-  const [includeAudio, setIncludeAudio] = React.useState(true);
-  const [progress, setProgress] = React.useState<ExportProgress | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
-  const [notice, setNotice] = React.useState<string | null>(null);
-  const [colourPath, setColourPath] = React.useState<string | null>(null);
-  const [result, setResult] = React.useState<{ url: string; name: string; size: number } | null>(
-    null,
-  );
-  const [support, setSupport] = React.useState<{ ok: boolean; reason?: string } | null>(null);
-  const abortRef = React.useRef<AbortController | null>(null);
-
-  React.useEffect(() => {
-    let active = true;
-    checkExportSupport().then((s) => active && setSupport(s));
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  // Object URLs for finished exports are held until replaced, so the download
-  // link and the inline preview keep working.
-  React.useEffect(() => {
-    return () => {
-      if (result) URL.revokeObjectURL(result.url);
-    };
-  }, [result]);
-
+/**
+ * Export *settings* only. The button that acts on them lives in the header,
+ * and the run itself takes over the screen — see reframe-export-dialog.tsx.
+ */
+function ReframeExportPanelInner({
+  doc,
+  quality,
+  includeAudio,
+  unsupportedReason,
+  disabled,
+  onSetTarget,
+  onSetQuality,
+  onSetIncludeAudio,
+}: Props) {
   const presetKey = (Object.keys(TARGET_PRESETS) as TargetPresetKey[]).find(
     (k) =>
       TARGET_PRESETS[k].width === doc.target.width &&
       TARGET_PRESETS[k].height === doc.target.height,
   );
 
-  const run = async () => {
-    setError(null);
-    setResult(null);
-    setNotice(null);
-    setColourPath(null);
-    setProgress({
-      fraction: 0,
-      framesRendered: 0,
-      stage: "video",
-      segmentIndex: 1,
-      segmentCount: Math.max(1, doc.segments.length),
-    });
-    const controller = new AbortController();
-    abortRef.current = controller;
-    try {
-      const blob = await exportReframedVideo({
-        doc,
-        file,
-        quality,
-        includeAudio,
-        signal: controller.signal,
-        onProgress: setProgress,
-        onNotice: setNotice,
-        onColourPath: setColourPath,
-      });
-      setResult({
-        url: URL.createObjectURL(blob),
-        name: suggestedFilename(doc),
-        size: blob.size,
-      });
-    } catch (e) {
-      if (!(e instanceof ExportCanceledError)) {
-        setError(e instanceof Error ? e.message : String(e));
-      }
-    } finally {
-      abortRef.current = null;
-      setProgress(null);
-    }
-  };
-
-  const busy = progress !== null;
-  const disabled = busy || support?.ok === false || doc.keyframes.length === 0;
-  const isReel = doc.segments.length > 1;
-  const kept = doc.segments.length > 0 ? totalSegmentDuration(doc) : doc.source.duration;
-
   return (
     <div className="space-y-3">
       <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
-        Export
+        Export settings
       </div>
 
       <div className="grid grid-cols-2 gap-2">
         <Select
           aria-label="Output resolution"
           value={presetKey ?? ""}
-          disabled={busy}
+          disabled={disabled}
           onChange={(e) => onSetTarget(TARGET_PRESETS[e.target.value as TargetPresetKey])}
           className="py-2 text-sm"
         >
@@ -148,8 +77,8 @@ function ReframeExportPanelInner({ doc, file, onSetTarget }: Props) {
         <Select
           aria-label="Quality"
           value={quality}
-          disabled={busy}
-          onChange={(e) => setQuality(e.target.value as ExportQuality)}
+          disabled={disabled}
+          onChange={(e) => onSetQuality(e.target.value as ExportQuality)}
           className="py-2 text-sm"
         >
           {(Object.keys(QUALITY_LABELS) as ExportQuality[]).map((q) => (
@@ -164,76 +93,17 @@ function ReframeExportPanelInner({ doc, file, onSetTarget }: Props) {
         <input
           type="checkbox"
           checked={includeAudio}
-          disabled={busy}
-          onChange={(e) => setIncludeAudio(e.target.checked)}
+          disabled={disabled}
+          onChange={(e) => onSetIncludeAudio(e.target.checked)}
           className="accent-accent"
         />
         Keep original audio
       </label>
 
-      {busy ? (
-        <div className="space-y-2">
-          <div className="h-1.5 w-full overflow-hidden rounded-pill bg-surface">
-            <div
-              className="h-full rounded-pill bg-accent transition-[width]"
-              style={{ width: `${Math.round(progress.fraction * 100)}%` }}
-            />
-          </div>
-          <div className="flex items-center justify-between text-xs text-text-secondary">
-            <span>
-              {progress.stage === "audio" && isReel
-                ? "Stitching audio"
-                : STAGE_LABELS[progress.stage]}
-              {progress.segmentCount > 1 && progress.stage === "video"
-                ? ` · segment ${progress.segmentIndex}/${progress.segmentCount}`
-                : ""}{" "}
-              · {progress.framesRendered} frames
-            </span>
-            <button
-              type="button"
-              className="text-destructive hover:underline"
-              onClick={() => abortRef.current?.abort()}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      ) : (
-        <Button fullWidth onClick={run} disabled={disabled}>
-          {isReel
-            ? `Export reel · ${doc.segments.length} segments · ${formatTimecode(kept)}`
-            : `Export ${doc.target.width}×${doc.target.height} MP4`}
-        </Button>
-      )}
-
-      {doc.keyframes.length === 0 && !busy && (
+      {doc.keyframes.length === 0 && (
         <p className="text-xs text-text-secondary">Add at least one keyframe to export.</p>
       )}
-      {support?.ok === false && (
-        <p className="text-xs text-warning">{support.reason}</p>
-      )}
-      {colourPath && <p className="text-xs text-text-secondary">{colourPath}</p>}
-      {notice && <p className="text-xs text-warning">{notice}</p>}
-      {error && <p className="text-xs text-destructive">{error}</p>}
-
-      {result && (
-        <div className="space-y-2 rounded-small bg-surface p-3">
-          <video
-            src={result.url}
-            controls
-            playsInline
-            className="mx-auto max-h-64 rounded-small bg-black"
-          />
-          <a
-            href={result.url}
-            download={result.name}
-            className="inline-flex w-full items-center justify-center gap-2 rounded-button bg-accent px-4 py-2.5 text-[15px] font-semibold text-background hover:opacity-90"
-          >
-            <Download className="h-4 w-4" />
-            Download · {formatBytes(result.size)}
-          </a>
-        </div>
-      )}
+      {unsupportedReason && <p className="text-xs text-warning">{unsupportedReason}</p>}
     </div>
   );
 }

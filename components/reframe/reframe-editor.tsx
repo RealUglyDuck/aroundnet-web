@@ -4,6 +4,7 @@ import * as React from "react";
 import {
   ChevronLeft,
   ChevronRight,
+  Download,
   FolderOpen,
   Pause,
   Play,
@@ -19,8 +20,10 @@ import { ReframePreview } from "./reframe-preview";
 import { ReframeTimeline } from "./reframe-timeline";
 import { ReframeInspector } from "./reframe-inspector";
 import { ReframeExportPanel } from "./reframe-export-panel";
+import { ReframeExportDialog } from "./reframe-export-dialog";
 import { ReframeSegmentsPanel } from "./reframe-segments-panel";
 import { ReframeDebugPanel } from "./reframe-debug-panel";
+import { checkExportSupport, type ExportQuality } from "@/lib/reframe/export";
 import {
   NO_MARK,
   clearSegments,
@@ -96,6 +99,15 @@ export function ReframeEditor() {
   const [future, setFuture] = React.useState<Snapshot[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // Export settings live here so the sidebar can edit them and the header
+  // button can act on them.
+  const [quality, setQuality] = React.useState<ExportQuality>("high");
+  const [includeAudio, setIncludeAudio] = React.useState(true);
+  const [exportOpen, setExportOpen] = React.useState(false);
+  // Bumped on every Export press; used as the dialog's key so each run is a
+  // fresh component instance.
+  const [exportRun, setExportRun] = React.useState(0);
+  const [support, setSupport] = React.useState<{ ok: boolean; reason?: string } | null>(null);
   // ?debug=1 shows the GPU colour self-test panel. Read lazily so the page
   // stays static-export friendly (no useSearchParams / Suspense dance).
   const [debug] = React.useState(
@@ -171,6 +183,16 @@ export function ReframeEditor() {
   React.useEffect(() => {
     return () => {
       if (srcRef.current) URL.revokeObjectURL(srcRef.current);
+    };
+  }, []);
+
+  // Probed once: WebCodecs and an H.264 encoder have to exist before it is
+  // worth letting anyone start a five-minute render.
+  React.useEffect(() => {
+    let alive = true;
+    checkExportSupport().then((s) => alive && setSupport(s));
+    return () => {
+      alive = false;
     };
   }, []);
 
@@ -541,6 +563,10 @@ export function ReframeEditor() {
       const target = e.target as HTMLElement | null;
       if (target && /^(INPUT|SELECT|TEXTAREA)$/.test(target.tagName)) return;
       if (!docRef.current) return;
+      // These listen on window, so they would still fire under the export
+      // overlay — Space would start playback behind it, A/F would edit the
+      // document the render is reading.
+      if (exportOpen) return;
 
       // Cmd/Ctrl+Z is the one shortcut that wants a modifier; everything else
       // is bare, so the letters below must not fire under one.
@@ -678,6 +704,7 @@ export function ReframeEditor() {
     applyMark,
     deleteKeyframe,
     deleteSegment,
+    exportOpen,
     nudgeRate,
     nudgeSeconds,
     redo,
@@ -804,6 +831,28 @@ export function ReframeEditor() {
               <FolderOpen className="h-4 w-4" /> Video
             </span>
           </label>
+
+          {/* The primary action, set apart from the document/file controls. */}
+          <div className="ml-1 h-6 w-px bg-divider" aria-hidden />
+          <Button
+            size="sm"
+            onClick={() => {
+              setExportRun((n) => n + 1);
+              setExportOpen(true);
+            }}
+            disabled={doc.keyframes.length === 0 || support?.ok === false}
+            title={
+              doc.keyframes.length === 0
+                ? "Add at least one keyframe to export."
+                : support?.ok === false
+                  ? support.reason
+                  : `Export ${doc.target.width}×${doc.target.height}${
+                      doc.segments.length > 1 ? ` · ${doc.segments.length} segments` : ""
+                    }`
+            }
+          >
+            <Download className="h-4 w-4" /> Export
+          </Button>
         </div>
       </header>
 
@@ -964,11 +1013,34 @@ export function ReframeEditor() {
             onClearAll={clearAllSegments}
           />
 
-          <ReframeExportPanel doc={doc} file={file} onSetTarget={setTarget} />
+          <ReframeExportPanel
+            doc={doc}
+            quality={quality}
+            includeAudio={includeAudio}
+            unsupportedReason={support?.ok === false ? support.reason : undefined}
+            disabled={exportOpen}
+            onSetTarget={setTarget}
+            onSetQuality={setQuality}
+            onSetIncludeAudio={setIncludeAudio}
+          />
 
           {debug && <ReframeDebugPanel file={file} />}
         </aside>
       </div>
+
+      {/* Keyed by run so each Export press mounts a clean dialog: no progress,
+          result or error can survive from the previous export. */}
+      {exportRun > 0 && (
+        <ReframeExportDialog
+          key={exportRun}
+          doc={doc}
+          file={file}
+          quality={quality}
+          includeAudio={includeAudio}
+          open={exportOpen}
+          onOpenChange={setExportOpen}
+        />
+      )}
     </div>
   );
 }
