@@ -8,9 +8,10 @@ import { Select } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
   TARGET_PRESETS,
+  findTargetPreset,
   totalSegmentDuration,
   type ReframeDoc,
-  type TargetPresetKey,
+  type TargetSize,
 } from "@/lib/reframe/model";
 import {
   ExportCanceledError,
@@ -19,6 +20,7 @@ import {
   type ExportProgress,
   type ExportQuality,
 } from "@/lib/reframe/export";
+import { maxCropExtent } from "@/lib/reframe/solve";
 import { formatBytes, formatTimecode } from "@/lib/reframe/format";
 
 interface Props {
@@ -157,17 +159,26 @@ export function ReframeExportDialog({
   const isReel = doc.segments.length > 1;
   const kept = doc.segments.length > 0 ? totalSegmentDuration(doc) : doc.source.duration;
   const percent = progress ? Math.round(progress.fraction * 100) : 0;
-  const presetKey = (Object.keys(TARGET_PRESETS) as TargetPresetKey[]).find(
-    (k) =>
-      TARGET_PRESETS[k].width === doc.target.width &&
-      TARGET_PRESETS[k].height === doc.target.height,
-  );
+  const preset = findTargetPreset(doc.target);
+  // Resolutions for the shape chosen in the editor. A hand-edited custom size
+  // falls back to the vertical tiers, and shows itself as the current option.
+  const sizes = TARGET_PRESETS[preset?.aspect ?? "9:16"];
+  /*
+   * How many source pixels this shape actually has to work with. A 9:16
+   * window out of a 16:9 frame is only 31.6% of its width, so 4K footage
+   * yields a 1215-wide crop — anything above that is interpolation: a bigger
+   * file (bitrate scales with pixel count) carrying the same detail.
+   *
+   * Measured at zoom 1, the best case. Punching in only makes it smaller, so
+   * a size flagged here is wasteful at every zoom.
+   */
+  const native = maxCropExtent(doc);
+  const upscales = (s: TargetSize) => s.width > native.width + 0.5;
   // Shown in place rather than by grimly disabling the header button: this is
-  // where someone looks when they want to export.
-  const blockedReason =
-    doc.keyframes.length === 0
-      ? "Add at least one keyframe before exporting — tap the video to place one."
-      : unsupportedReason;
+  // where someone looks when they want to export. No keyframe is required —
+  // with none the crop sits centred, which at 16:9 is the whole frame, so
+  // this doubles as a trimmer.
+  const blockedReason = unsupportedReason;
 
   /**
    * Close, but warn once first if the finished file was never downloaded.
@@ -212,25 +223,26 @@ export function ReframeExportDialog({
           {/* ── Settings ─────────────────────────────────────────────── */}
           {!started && (
             <div className="mt-5 space-y-3">
+              {/* Shape is chosen in the editor, where you can see what you are
+                  framing — only the file settings live here. */}
               <div className="grid grid-cols-2 gap-2">
                 <label className="block space-y-1">
                   <span className="text-xs text-text-secondary">Resolution</span>
                   <Select
                     aria-label="Output resolution"
-                    value={presetKey ?? ""}
-                    onChange={(e) =>
-                      onSetTarget(TARGET_PRESETS[e.target.value as TargetPresetKey])
-                    }
+                    value={preset ? String(preset.index) : ""}
+                    onChange={(e) => onSetTarget(sizes[Number(e.target.value)])}
                     className="py-2 text-sm"
                   >
-                    {!presetKey && (
+                    {!preset && (
                       <option value="">
                         {doc.target.width}×{doc.target.height}
                       </option>
                     )}
-                    {(Object.keys(TARGET_PRESETS) as TargetPresetKey[]).map((k) => (
-                      <option key={k} value={k}>
-                        {TARGET_PRESETS[k].width}×{TARGET_PRESETS[k].height}
+                    {sizes.map((s: TargetSize, i: number) => (
+                      <option key={`${s.width}x${s.height}`} value={i}>
+                        {s.width}×{s.height}
+                        {upscales(s) ? " · upscaled" : ""}
                       </option>
                     ))}
                   </Select>
@@ -252,6 +264,14 @@ export function ReframeExportDialog({
                   </Select>
                 </label>
               </div>
+
+              <p className="text-xs text-text-secondary">
+                This shape takes {Math.round(native.width)}×{Math.round(native.height)} from
+                the source.
+                {preset && upscales(sizes[preset.index])
+                  ? " Larger sizes are upscaled: bigger file, no more detail — worth it only if the platform you post to expects them."
+                  : ""}
+              </p>
 
               <label className="flex items-center gap-2 text-sm text-text-secondary">
                 <input

@@ -19,7 +19,20 @@ interface Props {
 }
 
 /**
- * The full 16:9 source frame with the 9:16 output window drawn on top.
+ * How tall the source frame is allowed to get. Without a cap, `aspect-ratio`
+ * on a full-width box makes vertical footage taller than the window — a 9:16
+ * clip in a 900px column is 1600px tall — pushing the transport and timeline
+ * off screen. Capping the height and letting the width follow keeps the whole
+ * frame and the controls visible at once.
+ *
+ * 60vh rather than more: the transport row, hint line and timeline below need
+ * roughly 250px, so on a laptop this is what fits without scrolling. It only
+ * binds on tall footage — 16:9 in a full-width column is already shorter.
+ */
+const MAX_STAGE_HEIGHT = "60vh";
+
+/**
+ * The full source frame with the output window drawn on top.
  *
  * Tapping anywhere re-centres the window on that point (the solver pulls it
  * back to the edge when the tap is near the side); dragging keeps re-centring
@@ -74,8 +87,15 @@ export function ReframeStage({
   return (
     <div
       ref={surfaceRef}
-      className="relative w-full overflow-hidden rounded-card bg-black touch-none select-none cursor-crosshair"
-      style={{ aspectRatio: `${doc.source.width} / ${doc.source.height}` }}
+      className="relative mx-auto w-full overflow-hidden rounded-card bg-black touch-none select-none cursor-crosshair"
+      style={{
+        aspectRatio: `${doc.source.width} / ${doc.source.height}`,
+        // Width, not height, is capped: `aspect-ratio` derives height from a
+        // definite width, so a max-height alone would stretch the box instead
+        // of shrinking it. This makes the width min(100%, cap × ratio), and
+        // the ratio then keeps the height within the cap.
+        maxWidth: `calc(${MAX_STAGE_HEIGHT} * ${doc.source.width} / ${doc.source.height})`,
+      }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={endDrag}

@@ -14,7 +14,9 @@ import {
   Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
+import { SpeedControl } from "@/components/video/speed-control";
+import { VideoDropZone } from "@/components/video/video-drop-zone";
+import { nudgeRate as stepRate } from "@/lib/video/rates";
 import { ReframeStage } from "./reframe-stage";
 import { ReframePreview } from "./reframe-preview";
 import { ReframeTimeline } from "./reframe-timeline";
@@ -25,6 +27,7 @@ import { ReframeDebugPanel } from "./reframe-debug-panel";
 import { checkExportSupport, type ExportQuality } from "@/lib/reframe/export";
 import {
   NO_MARK,
+  clamp,
   clearSegments,
   createDoc,
   keyframeEpsilon,
@@ -40,6 +43,10 @@ import {
   removeKeyframe,
   removeSegment,
   serializeDoc,
+  findTargetPreset,
+  TARGET_ASPECTS,
+  TARGET_PRESETS,
+  type TargetAspect,
   updateKeyframe,
   updateSegment,
   upsertKeyframe,
@@ -48,7 +55,7 @@ import {
   type MarkState,
   type ReframeDoc,
 } from "@/lib/reframe/model";
-import { clampCenter, solveState } from "@/lib/reframe/solve";
+import { solveState } from "@/lib/reframe/solve";
 import { probeVideo } from "@/lib/reframe/probe";
 
 const DEFAULT_FPS = 30;
@@ -63,12 +70,12 @@ const DEFAULT_FPS = 30;
  */
 const PRESET_RATES = [-1, 0.5, 1, 1.5, 2] as const;
 
-/**
- * The forward presets, which is what S/D step through. Stepping deliberately
- * uses the same ladder as the number keys: a separate finer ladder meant S/D
- * could land on a rate no button showed, so the row highlighted nothing.
+/*
+ * S/D step through the forward presets. Stepping deliberately uses the same
+ * ladder as the number keys: a separate finer ladder meant S/D could land on a
+ * rate no button showed, so the row highlighted nothing. See
+ * `lib/video/rates.ts`.
  */
-const FORWARD_RATES: number[] = PRESET_RATES.filter((rate) => rate > 0);
 
 /** How many steps of undo to keep. */
 const HISTORY_LIMIT = 100;
@@ -283,21 +290,7 @@ export function ReframeEditor() {
   }, [playbackRate, playing, src]);
 
   const nudgeRate = React.useCallback((direction: -1 | 1) => {
-    setPlaybackRate((prev) => {
-      // Reverse is a deliberate choice (key 1), not somewhere you slide into
-      // by stepping down. Stepping only ever leaves it.
-      if (prev < 0) return direction > 0 ? FORWARD_RATES[0] : prev;
-      let i = FORWARD_RATES.indexOf(prev);
-      if (i === -1) {
-        // Off-ladder: snap to the nearest step before moving.
-        i = FORWARD_RATES.reduce(
-          (best, rate, idx) =>
-            Math.abs(rate - prev) < Math.abs(FORWARD_RATES[best] - prev) ? idx : best,
-          0,
-        );
-      }
-      return FORWARD_RATES[Math.min(FORWARD_RATES.length - 1, Math.max(0, i + direction))];
-    });
+    setPlaybackRate((prev) => stepRate(PRESET_RATES, prev, direction));
   }, []);
 
   const toggleSegmentsOnly = React.useCallback(() => {
@@ -384,16 +377,24 @@ export function ReframeEditor() {
 
   /* ── Editing ─────────────────────────────────────────────────────────── */
 
+  /**
+   * A keyframe records *where you pointed*, not where the frame ended up.
+   * Clamping to what this target shape can reach happens in `solveCrop`, so
+   * switching between 9:16, 1:1 and 16:9 re-derives the framing from the
+   * original intent instead of from a position that was already flattened
+   * against the edges. Only the source frame bounds are applied here — the
+   * stage reports outside 0–1 when a drag leaves the element.
+   */
   const handlePick = React.useCallback((cx: number, cy: number) => {
     const current = docRef.current;
     if (!current) return;
+    const centre = { cx: clamp(cx, 0, 1), cy: clamp(cy, 0, 1) };
 
     // A drag keeps editing the keyframe the gesture started on rather than
     // creating a new one per pointermove.
     const dragId = dragKeyframeIdRef.current;
     const dragKf = dragId ? current.keyframes.find((k) => k.id === dragId) : undefined;
     if (dragKf) {
-      const centre = clampCenter(current, cx, cy, dragKf.zoom);
       // Mid-gesture: history was already pushed when the drag started.
       commit(updateKeyframe(current, dragKf.id, centre), { transient: true });
       return;
@@ -402,7 +403,6 @@ export function ReframeEditor() {
     const t = videoRef.current?.currentTime ?? currentTime;
     const epsilon = keyframeEpsilon(current);
     const zoom = solveState(current, t).zoom;
-    const centre = clampCenter(current, cx, cy, zoom);
     const id = keyframeNear(current, t, epsilon)?.id ?? newKeyframeId();
 
     dragKeyframeIdRef.current = id;
@@ -433,11 +433,11 @@ export function ReframeEditor() {
       const current = docRef.current;
       if (!current) return;
       const t = videoRef.current?.currentTime ?? currentTime;
+      // solveState is the intended centre, which is what a keyframe stores.
       const state = solveState(current, t);
-      const centre = clampCenter(current, state.cx, state.cy, zoom);
       const epsilon = keyframeEpsilon(current);
       const id = keyframeNear(current, t, epsilon)?.id ?? newKeyframeId();
-      commit(upsertKeyframe(current, { id, t, ...centre, zoom }, epsilon));
+      commit(upsertKeyframe(current, { id, t, cx: state.cx, cy: state.cy, zoom }, epsilon));
       setSelectedId(id);
     },
     [commit, currentTime],
@@ -476,6 +476,26 @@ export function ReframeEditor() {
     (target: { width: number; height: number }) => {
       const current = docRef.current;
       if (current) commit({ ...current, target });
+    },
+    [commit],
+  );
+
+  /**
+   * Output shape. This lives in the editor, not the export dialog, because it
+   * decides what you are framing: the stage overlay and the preview both take
+   * their aspect from `doc.target`, so picking 1:1 immediately shows the
+   * square you will actually get. Resolution and quality stay in the export
+   * dialog — they change the file, not the framing.
+   *
+   * The size tier is carried across, so switching shape doesn't quietly
+   * downgrade 1440 to 720.
+   */
+  const setAspect = React.useCallback(
+    (aspect: TargetAspect) => {
+      const current = docRef.current;
+      if (!current) return;
+      const index = findTargetPreset(current.target)?.index ?? 1;
+      commit({ ...current, target: TARGET_PRESETS[aspect][index] });
     },
     [commit],
   );
@@ -777,6 +797,10 @@ export function ReframeEditor() {
     );
   }
 
+  const currentPreset = findTargetPreset(doc.target);
+  const currentAspect = currentPreset?.aspect ?? null;
+  const sizeTier = currentPreset?.index ?? 1;
+
   return (
     <div className="mx-auto max-w-7xl space-y-4 p-4">
       <header className="flex flex-wrap items-center gap-3">
@@ -881,27 +905,12 @@ export function ReframeEditor() {
               <ChevronRight className="h-4 w-4" />
             </Button>
 
-            <div
-              className="ml-1 flex items-center overflow-hidden rounded-button border border-divider"
-              role="group"
-              aria-label="Playback speed"
-            >
-              {PRESET_RATES.map((rate, i) => (
-                <button
-                  key={rate}
-                  type="button"
-                  onClick={() => setPlaybackRate(rate)}
-                  aria-pressed={playbackRate === rate}
-                  title={`${rate < 0 ? "Reverse" : `${rate}× speed`} (${i + 1})`}
-                  className={
-                    playbackRate === rate
-                      ? "bg-accent px-2.5 py-1.5 text-xs font-semibold text-background"
-                      : "bg-surface px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary"
-                  }
-                >
-                  {rate < 0 ? "◀ rev" : `${rate}×`}
-                </button>
-              ))}
+            <div className="ml-1">
+              <SpeedControl
+                rate={playbackRate}
+                rates={PRESET_RATES}
+                onChange={setPlaybackRate}
+              />
             </div>
 
             <div className="ml-1 flex items-center gap-1">
@@ -965,8 +974,36 @@ export function ReframeEditor() {
 
         <aside className="space-y-4">
           <div>
-            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">
-              Output preview
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                Output
+              </span>
+              <div
+                className="flex items-center overflow-hidden rounded-button border border-divider"
+                role="group"
+                aria-label="Output shape"
+              >
+                {TARGET_ASPECTS.map((a) => {
+                  const active = a === currentAspect;
+                  const size = TARGET_PRESETS[a][sizeTier];
+                  return (
+                    <button
+                      key={a}
+                      type="button"
+                      onClick={() => setAspect(a)}
+                      aria-pressed={active}
+                      title={`${a} · ${size.width}×${size.height}`}
+                      className={
+                        active
+                          ? "bg-accent px-2 py-1 text-[11px] font-semibold text-background"
+                          : "bg-surface px-2 py-1 text-[11px] text-text-secondary hover:text-text-primary"
+                      }
+                    >
+                      {a}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
             <ReframePreview
               doc={doc}
@@ -1042,58 +1079,16 @@ function FilePicker({
   loading: boolean;
   error: string | null;
 }) {
-  const [dragOver, setDragOver] = React.useState(false);
-
   return (
     <div className="mx-auto max-w-xl p-6">
       <h1 className="text-xl font-semibold">Reframe</h1>
       <p className="mt-1 text-sm text-text-secondary">
-        Turn a landscape clip into a vertical one. Scrub to a moment, tap where the action
-        is, and the 9:16 frame moves there — repeat, and it animates between your taps.
+        Reframe a clip to vertical, square or wide. Scrub to a moment, tap where the
+        action is, and the frame moves there — repeat, and it animates between your taps.
+        Or skip the tapping and just mark segments to trim.
       </p>
 
-      <label
-        className={`mt-6 flex cursor-pointer flex-col items-center justify-center gap-3 rounded-card border-2 border-dashed p-12 text-center transition ${
-          dragOver ? "border-accent bg-accent-muted" : "border-divider bg-surface"
-        }`}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragOver(true);
-        }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragOver(false);
-          const f = e.dataTransfer.files?.[0];
-          if (f) onPick(f);
-        }}
-      >
-        <input
-          type="file"
-          accept="video/*"
-          className="sr-only"
-          disabled={loading}
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) onPick(f);
-            e.target.value = "";
-          }}
-        />
-        {loading ? (
-          <>
-            <Spinner className="h-6 w-6 text-accent" />
-            <span className="text-sm text-text-secondary">Reading video…</span>
-          </>
-        ) : (
-          <>
-            <FolderOpen className="h-8 w-8 text-accent" />
-            <span className="text-sm font-medium">Choose a video, or drop one here</span>
-            <span className="text-xs text-text-secondary">
-              Stays on your device — nothing is uploaded.
-            </span>
-          </>
-        )}
-      </label>
+      <VideoDropZone onPick={onPick} loading={loading} className="mt-6" />
 
       {error && (
         <p className="mt-4 rounded-small bg-destructive/10 px-3 py-2 text-sm text-destructive">

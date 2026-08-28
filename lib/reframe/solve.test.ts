@@ -246,3 +246,177 @@ for (const rot of [0, 90, 180, 270] as const) {
 console.log("✓ cropTexMatrix rotations");
 
 console.log("All texture-matrix checks passed.");
+
+/* ── Target shapes: 9:16, 1:1 and 16:9 ─────────────────────────────────── */
+import { TARGET_ASPECTS, TARGET_PRESETS, findTargetPreset, DEFAULT_TARGET } from "./model.ts";
+
+{
+  const src = { width: 1920, height: 1080, duration: 10, name: "t.mp4", frameRate: 30 };
+
+  // 16:9 out of a 16:9 source is the whole frame — no crop at all. This is
+  // what makes the editor usable as a plain trimmer, so it must stay exact.
+  const wide = solveCrop(createDoc(src, { width: 1920, height: 1080 }), 0);
+  assert.deepEqual(wide, { x: 0, y: 0, width: 1920, height: 1080 }, "16:9 is the full frame");
+  // ...and it holds at every listed 16:9 resolution, since only the ratio matters.
+  for (const size of TARGET_PRESETS["16:9"]) {
+    const r = solveCrop(createDoc(src, size), 0);
+    assert.deepEqual(r, { x: 0, y: 0, width: 1920, height: 1080 }, `full frame at ${size.width}`);
+  }
+
+  // 1:1 is a centred, full-height square.
+  const square = solveCrop(createDoc(src, { width: 1080, height: 1080 }), 0);
+  assert.deepEqual(square, { x: 420, y: 0, width: 1080, height: 1080 }, "1:1 centred square");
+
+  // A vertical source flips which dimension is the constrained one: a 16:9
+  // target out of 9:16 footage is full width, not full height.
+  const vertical = { ...src, width: 1080, height: 1920 };
+  const wideFromTall = solveCrop(createDoc(vertical, { width: 1920, height: 1080 }), 0);
+  assert.equal(wideFromTall.width, 1080, "16:9 from a vertical source is full width");
+  assert.equal(wideFromTall.height, 1080 * (9 / 16));
+  assert.equal(wideFromTall.y, (1920 - wideFromTall.height) / 2, "and vertically centred");
+
+  // With no keyframes every shape is centred, which is what lets an export
+  // run before anything has been framed. Iterating TARGET_ASPECTS rather than
+  // a hand-written list means a newly added shape is covered by default.
+  for (const aspect of TARGET_ASPECTS) {
+    for (const size of TARGET_PRESETS[aspect]) {
+      const doc = createDoc(src, size);
+      const r = solveCrop(doc, 0);
+      assert.ok(
+        Math.abs(r.x + r.width / 2 - src.width / 2) < 1e-9,
+        `${aspect} ${size.width}×${size.height} centred horizontally`,
+      );
+      assert.ok(r.width <= src.width + 1e-9 && r.height <= src.height + 1e-9, "fits the source");
+    }
+  }
+  console.log("✓ target shapes");
+}
+
+// Preset lookup, which drives the two export selects.
+{
+  assert.deepEqual(findTargetPreset({ width: 1920, height: 1080 }), { aspect: "16:9", index: 1 });
+  assert.deepEqual(findTargetPreset(DEFAULT_TARGET), { aspect: "9:16", index: 1 });
+  assert.equal(findTargetPreset({ width: 999, height: 111 }), null, "custom sizes stay valid");
+  // Index alignment is what makes "switch shape, keep the tier" work, so
+  // every aspect must offer the same number of tiers.
+  for (const aspect of TARGET_ASPECTS) {
+    assert.equal(
+      TARGET_PRESETS[aspect].length,
+      TARGET_PRESETS["9:16"].length,
+      `${aspect} has the same number of tiers`,
+    );
+    for (let i = 0; i < TARGET_PRESETS[aspect].length; i++) {
+      assert.equal(findTargetPreset(TARGET_PRESETS[aspect][i])?.index, i, `${aspect} tier ${i}`);
+    }
+  }
+  for (const aspect of TARGET_ASPECTS) {
+    const [w, h] = aspect.split(":").map(Number);
+    let previous = 0;
+    for (const size of TARGET_PRESETS[aspect]) {
+      // Every preset must actually have the ratio its key claims — a typo
+      // like 1080×1340 would otherwise sail through and quietly crop wrong.
+      assert.ok(
+        Math.abs(size.width / size.height - w / h) < 1e-9,
+        `${aspect} ${size.width}×${size.height} matches its ratio`,
+      );
+      // The picker shows these in array order, so the array is the sort.
+      const smaller = Math.min(size.width, size.height);
+      assert.ok(smaller > previous, `${aspect} tiers ascend (${smaller} after ${previous})`);
+      previous = smaller;
+      // H.264 4:2:0 cannot encode odd dimensions.
+      assert.ok(size.width % 2 === 0 && size.height % 2 === 0, `${aspect} ${smaller} is even`);
+    }
+  }
+  console.log("✓ target presets");
+}
+
+console.log("All target-shape checks passed.");
+
+/* ── Keyframes store intent, not the clamped result ────────────────────── */
+{
+  const src = { width: 1920, height: 1080, duration: 10, name: "t.mp4", frameRate: 30 };
+  const wide = { width: 1920, height: 1080 };
+  const tall = { width: 1080, height: 1920 };
+  const square = { width: 1080, height: 1080 };
+  // Half the crop width, normalised — how close a centre may get to an edge.
+  const halfOf = (target: { width: number; height: number }) =>
+    maxCropExtent(createDoc(src, target)).width / src.width / 2;
+
+  const withKeys = (
+    target: { width: number; height: number },
+    keys: Array<{ t: number; cx: number; cy?: number }>,
+  ) => {
+    let d = createDoc(src, target);
+    for (const k of keys) {
+      d = upsertKeyframe(d, { t: k.t, cx: k.cx, cy: k.cy ?? 0.5, zoom: 1, easing: "linear" });
+    }
+    return d;
+  };
+  const centreX = (d: ReframeDoc, t: number) => {
+    const r = solveCrop(d, t);
+    return (r.x + r.width / 2) / src.width;
+  };
+
+  // The headline case. Framing at 16:9 out of 16:9 footage moves nothing —
+  // there is no freedom — but the clicks are still recorded, so switching to
+  // 9:16 afterwards pans between them instead of sitting dead centre.
+  const clicks = [
+    { t: 0, cx: 0.2 },
+    { t: 5, cx: 0.8 },
+  ];
+  const asWide = withKeys(wide, clicks);
+  assert.deepEqual(solveCrop(asWide, 0), { x: 0, y: 0, width: 1920, height: 1080 });
+  assert.deepEqual(solveCrop(asWide, 5), { x: 0, y: 0, width: 1920, height: 1080 });
+  const asTall = { ...asWide, target: tall };
+  assert.ok(Math.abs(centreX(asTall, 0) - 0.2) < 1e-9, "9:16 recovers the first click");
+  assert.ok(Math.abs(centreX(asTall, 5) - 0.8) < 1e-9, "9:16 recovers the second click");
+  console.log("✓ intent survives a 16:9 → 9:16 switch");
+
+  // A click the shape cannot reach is still recorded in full, and each shape
+  // clamps it to its own limit — so the framing opens up as freedom grows.
+  const edge = withKeys(tall, [{ t: 0, cx: 0.05 }]);
+  assert.ok(Math.abs(centreX(edge, 0) - halfOf(tall)) < 1e-9, "9:16 pins to its own edge");
+  const edgeSquare = { ...edge, target: square };
+  assert.ok(Math.abs(centreX(edgeSquare, 0) - halfOf(square)) < 1e-9, "1:1 pins to its own edge");
+  assert.ok(halfOf(square) > halfOf(tall), "the square window is the wider one");
+  // The stored keyframe itself was never rewritten by either shape.
+  assert.equal(edge.keyframes[0].cx, 0.05, "the click is stored as clicked");
+  console.log("✓ intent adapts per shape");
+
+  // Pan feel: with an unreachable start the pan must set off immediately,
+  // because each endpoint is pulled into range *before* interpolating. (Were
+  // the raw values interpolated instead, the crop would sit at the edge for
+  // the first ~17% of the move.)
+  const pan = withKeys(tall, [
+    { t: 0, cx: 0.0 },
+    { t: 10, cx: 0.9 },
+  ]);
+  const atStart = centreX(pan, 0);
+  assert.ok(Math.abs(atStart - halfOf(tall)) < 1e-9, "starts pinned to the edge");
+  assert.ok(centreX(pan, 1) > atStart + 1e-6, "and is already moving one second in");
+  // Linear easing between two clamped endpoints is a straight line. Both ends
+  // are out of reach here (0.9 is past 1 − half too), so the midpoint is the
+  // average of the two edge limits — dead centre.
+  const mid = (halfOf(tall) + (1 - halfOf(tall))) / 2;
+  assert.ok(Math.abs(mid - 0.5) < 1e-12);
+  assert.ok(Math.abs(centreX(pan, 5) - mid) < 1e-9, "midpoint is the clamped average");
+  console.log("✓ pan sets off immediately from a clamped edge");
+
+  // Idempotence: feeding back the already-clamped centres (what documents
+  // written before this change contain) renders identically.
+  const clamped = withKeys(tall, [{ t: 0, cx: halfOf(tall) }]);
+  assert.deepEqual(solveCrop(clamped, 0), solveCrop(edge, 0), "old documents are unchanged");
+  console.log("✓ pre-existing documents render identically");
+
+  // Both axes behave the same way: at zoom 1 a 9:16 window is full height, so
+  // a vertical click is recorded but unreachable until zoomed in.
+  let vertical = createDoc(src, tall);
+  vertical = upsertKeyframe(vertical, { t: 0, cx: 0.5, cy: 0.1, zoom: 1, easing: "linear" });
+  assert.equal(solveCrop(vertical, 0).y, 0, "no vertical freedom at zoom 1");
+  const zoomed = { ...vertical, keyframes: [{ ...vertical.keyframes[0], zoom: 2 }] };
+  assert.ok(solveCrop(zoomed, 0).y < 1080 / 2 - solveCrop(zoomed, 0).height / 2 + 1e-9);
+  assert.ok(solveCrop(zoomed, 0).y >= 0, "and it stays inside the frame");
+  console.log("✓ vertical intent behaves the same");
+}
+
+console.log("All intent-keyframe checks passed.");

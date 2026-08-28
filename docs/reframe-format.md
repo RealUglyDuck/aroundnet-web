@@ -1,7 +1,10 @@
 # Reframe document format (v1)
 
-A *reframe document* describes how a landscape clip is cropped into a vertical
-one over time. It is deliberately small, resolution-independent and free of any
+A *reframe document* describes how a clip is cropped into another shape over
+time — 9:16, 4:5, 1:1 or 16:9; the ratio is simply
+`target.width / target.height` and nothing in the math is specialised to any
+of them. A 16:9 target from 16:9 footage crops nothing, which is how the same
+document type also expresses a plain trim. It is deliberately small, resolution-independent and free of any
 web-specific concepts, so the same document can drive the web editor
 (`/reframe`), a future ARoundNet iOS implementation, or a server-side renderer.
 
@@ -41,7 +44,7 @@ purpose. Port those two files and you have a compatible implementation.
 | Field | Meaning |
 | --- | --- |
 | `t` | Seconds from the start of the source. Keyframes are sorted ascending. |
-| `cx`, `cy` | Centre of the crop window, normalised 0–1 in **source** coordinates. Resolution-independent, so a document survives a re-encode. |
+| `cx`, `cy` | The point that was pointed at — the *requested* centre of the crop window, normalised 0–1 in **source** coordinates. Resolution-independent, so a document survives a re-encode, and shape-independent, so it survives a change of `target`. It is **not** clamped to what the window can reach; that happens when solving (step 3). |
 | `zoom` | `1` = the largest target-aspect rect that fits in the source. `2` = a 2× punch-in. Always ≥ 1. |
 | `easing` | Governs the segment **from this keyframe to the next**. The last keyframe's easing is meaningless. |
 | `id` | Editor-local only. Not meaningful across documents; regenerate freely. |
@@ -135,12 +138,31 @@ cx = halfW >= 0.5 ? 0.5 : clamp(cx, halfW, 1 - halfW)
 cy = halfH >= 0.5 ? 0.5 : clamp(cy, halfH, 1 - halfH)
 ```
 
-> **Clamp after interpolating, not only when editing.** The editor also clamps
-> at edit time so the stored values are honest, but that is not sufficient: when
-> `zoom` animates, a centre that is legal at both ends of a segment can still
-> leave the frame in the middle of it. `solve.ts` clamps in both places, and
-> the test in `solve.test` sweeps an animated-zoom pan to prove the rect never
-> escapes the source.
+> **Clamp twice: once per keyframe before interpolating, once on the result.**
+> Both matter, and a port that skips either is wrong.
+>
+> *Per keyframe, before step 2*, using that keyframe's own `zoom`. A keyframe
+> records where you pointed, which may be somewhere this `target` cannot
+> reach — pointing at the far left of a 16:9 source when the window is 9:16,
+> or anywhere at all when the window is the whole frame. Pulling each endpoint
+> into range first means the pan runs between positions that exist, so it sets
+> off immediately; interpolating the raw values instead leaves the crop
+> sitting against the edge for the first stretch of the move while the
+> interpolation catches up.
+>
+> *On the interpolated result.* When `zoom` animates, a centre that is legal
+> at both ends of a segment can still leave the frame in the middle of it.
+>
+> `solve.ts` does both, and `solve.test.ts` covers them: an animated-zoom
+> sweep proves the rect never escapes the source, and the intent cases prove
+> a document reframed from 16:9 to 9:16 pans between the original clicks.
+
+> **Note for documents written before 2026-08-26.** Back then the editor
+> clamped at *edit* time and stored the clamped result, so those `cx`/`cy`
+> values are positions rather than intent. They still render identically —
+> clamping an already-clamped centre is a no-op — but the information needed
+> to reframe them into a different `target` was discarded when they were
+> authored and cannot be recovered.
 
 The final rect, in source pixels:
 
@@ -343,6 +365,16 @@ map, contrast and saturation on the encoded output.
   and do not align to segment boundaries, and an encoded packet can be re-timed
   but not shortened — the leftover fractional packet at each join is an audible
   click. A single contiguous range still takes the free packet-copy path.
+- Resolutions are four tiers per shape — 720, 1080, 1440, 2160 by the smaller
+  dimension, index-aligned across shapes so switching shape keeps the tier.
+  The export dialog marks any tier larger than `maxCropExtent(doc)` as
+  `· upscaled` and prints the crop the source actually supplies: a 9:16 window
+  out of 16:9 4K is only 1215 px wide, so 1440 and 2160 there are
+  interpolation — bitrate scales with pixel count, so the file grows for no
+  extra detail. They are marked rather than removed because uploading at the
+  size a platform expects can still beat letting the platform upscale after
+  its own recompression, and because on vertical 4K footage those tiers are
+  genuine.
 - Needs WebCodecs: Chrome, Edge, or Safari 16.4+. `checkExportSupport()` probes
   for it and the reason is shown in the export dialog, next to a disabled
   Start button — the header's Export button always opens, because a dead

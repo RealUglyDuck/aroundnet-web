@@ -145,22 +145,26 @@ function segmentBefore(doc: ReframeDoc, t: number): ReframeSegment | null {
   return found;
 }
 
+/** The centre a keyframe contributes to an interpolation. */
+type CentreOf = (kf: ReframeKeyframe) => { cx: number; cy: number };
+
+const storedCentre: CentreOf = (kf) => kf;
+
 /**
- * Interpolate the raw (un-clamped) crop state at time `t`.
- *
- * Outside the governing keyframe range the nearest keyframe is held, so a
- * single keyframe means a static crop and no keyframes means dead centre.
+ * The interpolation walk, shared by the raw and reachable solves. Which
+ * keyframes take part, the hold-outside-the-range rule and the easing are
+ * identical either way; only the centre each keyframe contributes differs.
  */
-export function solveState(doc: ReframeDoc, t: number): CropState {
+function interpolateState(doc: ReframeDoc, t: number, centreOf: CentreOf): CropState {
   const kfs = doc.keyframes;
   const { lo, hi } = keyframeRangeAt(doc, t);
   if (hi <= lo) return { cx: 0.5, cy: 0.5, zoom: 1 };
 
   const first = kfs[lo];
-  if (t <= first.t) return { cx: first.cx, cy: first.cy, zoom: first.zoom };
+  if (t <= first.t) return { ...centreOf(first), zoom: first.zoom };
 
   const last = kfs[hi - 1];
-  if (t >= last.t) return { cx: last.cx, cy: last.cy, zoom: last.zoom };
+  if (t >= last.t) return { ...centreOf(last), zoom: last.zoom };
 
   let i = lo;
   while (i < hi - 1 && kfs[i + 1].t <= t) i += 1;
@@ -170,23 +174,48 @@ export function solveState(doc: ReframeDoc, t: number): CropState {
   const span = b.t - a.t;
   const u = span > 0 ? clamp((t - a.t) / span, 0, 1) : 0;
   const e = ease(a.easing, u);
+  const ca = centreOf(a);
+  const cb = centreOf(b);
 
   return {
-    cx: a.cx + (b.cx - a.cx) * e,
-    cy: a.cy + (b.cy - a.cy) * e,
+    cx: ca.cx + (cb.cx - ca.cx) * e,
+    cy: ca.cy + (cb.cy - ca.cy) * e,
     zoom: a.zoom + (b.zoom - a.zoom) * e,
   };
 }
 
 /**
+ * Interpolate the *intended* crop state at time `t` — the points that were
+ * pointed at, with no regard for whether the frame can actually reach them.
+ *
+ * This is what the editor authors keyframes from, so that intent survives a
+ * change of target shape. For where the crop actually lands, use
+ * {@link solveCrop}.
+ *
+ * Outside the governing keyframe range the nearest keyframe is held, so a
+ * single keyframe means a static crop and no keyframes means dead centre.
+ */
+export function solveState(doc: ReframeDoc, t: number): CropState {
+  return interpolateState(doc, t, storedCentre);
+}
+
+/**
  * The crop rect at time `t`, in source pixels.
  *
- * Clamping happens *after* interpolation as well as at edit time: when zoom
- * animates, a centre that was legal at both ends of a segment can still leave
- * the frame in the middle of it.
+ * Clamping happens twice, and both are load-bearing:
+ *
+ * - **Per keyframe, before interpolating.** A keyframe records where you
+ *   pointed, which may be somewhere this target shape cannot reach. Pulling
+ *   each endpoint into range first means the pan runs between positions that
+ *   exist, so it sets off immediately instead of sitting at the edge while the
+ *   interpolation catches up. It is also what makes rendering unchanged for a
+ *   document authored under this same shape: those centres are already in
+ *   range, so this is a no-op on them.
+ * - **On the result.** When `zoom` animates, a centre that is legal at both
+ *   ends of a segment can still leave the frame in the middle of it.
  */
 export function solveCrop(doc: ReframeDoc, t: number): CropRect {
-  const state = solveState(doc, t);
+  const state = interpolateState(doc, t, (kf) => clampCenter(doc, kf.cx, kf.cy, kf.zoom));
   const { width, height } = cropExtent(doc, state.zoom);
   const { cx, cy } = clampCenter(doc, state.cx, state.cy, state.zoom);
   return {

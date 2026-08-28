@@ -173,13 +173,73 @@ export interface ReframeSegment {
   end: number;
 }
 
-export const TARGET_PRESETS = {
-  "1080x1920": { width: 1080, height: 1920 },
-  "720x1280": { width: 720, height: 1280 },
-  "1440x2560": { width: 1440, height: 2560 },
-} as const;
+/**
+ * Output shapes. 9:16 is what the editor was built for, but the solver has
+ * never cared about the ratio — at 16:9 from a 16:9 source with no keyframes
+ * the crop is the whole frame, which makes the editor a plain trimmer.
+ */
+export type TargetAspect = "9:16" | "4:5" | "1:1" | "16:9";
 
-export type TargetPresetKey = keyof typeof TARGET_PRESETS;
+/** Ordered tallest to widest, which is how the picker reads. */
+export const TARGET_ASPECTS: readonly TargetAspect[] = ["9:16", "4:5", "1:1", "16:9"];
+
+export interface TargetSize {
+  width: number;
+  height: number;
+}
+
+/**
+ * Size tiers per aspect, ascending, and index-aligned across aspects so
+ * switching shape keeps the tier you picked. Named by the *smaller* dimension
+ * — 720, 1080, 1440, 2160 — which is the one every platform quotes.
+ *
+ * All dimensions are even: H.264 4:2:0 requires it.
+ */
+export const TARGET_PRESETS: Record<TargetAspect, readonly TargetSize[]> = {
+  "9:16": [
+    { width: 720, height: 1280 },
+    { width: 1080, height: 1920 },
+    { width: 1440, height: 2560 },
+    { width: 2160, height: 3840 },
+  ],
+  "4:5": [
+    { width: 720, height: 900 },
+    { width: 1080, height: 1350 },
+    { width: 1440, height: 1800 },
+    { width: 2160, height: 2700 },
+  ],
+  "1:1": [
+    { width: 720, height: 720 },
+    { width: 1080, height: 1080 },
+    { width: 1440, height: 1440 },
+    { width: 2160, height: 2160 },
+  ],
+  "16:9": [
+    { width: 1280, height: 720 },
+    { width: 1920, height: 1080 },
+    { width: 2560, height: 1440 },
+    { width: 3840, height: 2160 },
+  ],
+};
+
+/** 1080 is what Reels and TikTok expect, so it is the tier new documents get. */
+export const DEFAULT_TARGET: TargetSize = TARGET_PRESETS["9:16"][1];
+
+/**
+ * Which preset a target is, or null when it is a size the presets don't
+ * cover (a hand-edited document, say — which stays perfectly valid).
+ */
+export function findTargetPreset(
+  target: TargetSize,
+): { aspect: TargetAspect; index: number } | null {
+  for (const aspect of TARGET_ASPECTS) {
+    const index = TARGET_PRESETS[aspect].findIndex(
+      (p) => p.width === target.width && p.height === target.height,
+    );
+    if (index >= 0) return { aspect, index };
+  }
+  return null;
+}
 
 let idCounter = 0;
 
@@ -201,7 +261,7 @@ export function keyframeEpsilon(doc: ReframeDoc): number {
 
 export function createDoc(
   source: ReframeSource,
-  target: { width: number; height: number } = TARGET_PRESETS["1080x1920"],
+  target: TargetSize = DEFAULT_TARGET,
 ): ReframeDoc {
   return { version: 1, source, target, keyframes: [], segments: [] };
 }

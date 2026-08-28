@@ -13,6 +13,7 @@ import {
   type ReframeSegment,
 } from "@/lib/reframe/model";
 import { formatTimecode } from "@/lib/reframe/format";
+import { useRafCoalesce } from "@/lib/hooks/use-raf-coalesce";
 
 interface Props {
   doc: ReframeDoc;
@@ -242,42 +243,10 @@ export function ReframeTimeline({
   const segmentDragRef = React.useRef<{ id: string; edge: "start" | "end" } | null>(null);
   const keyframeMovedRef = React.useRef(false);
 
-  // pointermove fires far faster than the display refreshes — a high-polling-
-  // rate mouse easily exceeds 500Hz — and each drag update re-renders the whole
-  // editor and assigns video.currentTime, which forces a decode. Coalescing to
-  // one update per animation frame is the difference between a smooth scrub and
-  // a queue of seeks the browser can never catch up with.
-  const frameRef = React.useRef<number | null>(null);
-  const pendingRef = React.useRef<(() => void) | null>(null);
-
-  const scheduleFrame = React.useCallback((fn: () => void) => {
-    pendingRef.current = fn;
-    if (frameRef.current !== null) return;
-    frameRef.current = requestAnimationFrame(() => {
-      frameRef.current = null;
-      const run = pendingRef.current;
-      pendingRef.current = null;
-      run?.();
-    });
-  }, []);
-
-  /** Apply the last queued update now — the final position must not be lost. */
-  const flushFrame = React.useCallback(() => {
-    if (frameRef.current !== null) {
-      cancelAnimationFrame(frameRef.current);
-      frameRef.current = null;
-    }
-    const run = pendingRef.current;
-    pendingRef.current = null;
-    run?.();
-  }, []);
-
-  React.useEffect(
-    () => () => {
-      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
-    },
-    [],
-  );
+  // Each drag update re-renders the whole editor and assigns
+  // video.currentTime, which forces a decode, so pointermove is coalesced to
+  // one update per animation frame.
+  const { schedule: scheduleFrame, flush: flushFrame } = useRafCoalesce();
 
   const handleDetailDown = (e: React.PointerEvent) => {
     e.currentTarget.setPointerCapture(e.pointerId);
