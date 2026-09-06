@@ -305,4 +305,60 @@ import { DEFAULT_GRADE, gradeOf, parseGrade, setGrade } from "./model.ts";
   console.log("✓ grade field");
 }
 
+/* ── applyLoadedDoc: fitting a saved document onto the open video ───────── */
+import { applyLoadedDoc } from "./model.ts";
+
+{
+  // The open clip is shorter than the one the document was written against —
+  // the case that matters, because segments are in seconds and would otherwise
+  // point past the end.
+  const current = createDoc({ width: 1920, height: 1080, duration: 10, name: "open.mp4" });
+  const saved = addSegment(
+    addSegment(
+      {
+        ...createDoc({ width: 3840, height: 2160, duration: 30, name: "saved.mp4" }),
+        target: { width: 1080, height: 1350 },
+        keyframes: [{ id: "k1", t: 4, cx: 0.25, cy: 0.5, zoom: 1.5, easing: "linear" }],
+      },
+      2,
+      6,
+    ).doc,
+    20,
+    26,
+  ).doc;
+
+  const { doc, aspectMismatch } = applyLoadedDoc(current, saved);
+
+  // The open video's own metadata survives; only the framing is taken.
+  assert.deepEqual(doc.source, current.source, "loaded video's metadata is kept");
+  assert.deepEqual(doc.target, { width: 1080, height: 1350 }, "target comes from the document");
+  assert.equal(doc.keyframes.length, 1);
+  assert.equal(doc.keyframes[0].cx, 0.25, "normalised keyframes carry over untouched");
+  // 2–6 fits; 20–26 sits entirely past the 10s end and is dropped rather than
+  // collapsing to a zero-length segment at the boundary.
+  assert.equal(doc.segments.length, 1, "out-of-range segments are dropped");
+  assert.deepEqual(
+    [doc.segments[0].start, doc.segments[0].end],
+    [2, 6],
+    "an in-range segment is untouched",
+  );
+  // 16:9 → 16:9 despite 1080p vs 4K.
+  assert.equal(aspectMismatch, false, "same aspect at a different resolution is not a mismatch");
+  console.log("✓ applyLoadedDoc clamps and keeps the open video's metadata");
+}
+
+{
+  // A segment straddling the end is truncated, not dropped.
+  const current = createDoc({ width: 1920, height: 1080, duration: 10, name: "open.mp4" });
+  const saved = addSegment(
+    createDoc({ width: 1080, height: 1920, duration: 30, name: "vertical.mp4" }),
+    8,
+    20,
+  ).doc;
+  const { doc, aspectMismatch } = applyLoadedDoc(current, saved);
+  assert.deepEqual([doc.segments[0].start, doc.segments[0].end], [8, 10], "clamped to the end");
+  assert.equal(aspectMismatch, true, "9:16 onto 16:9 is flagged");
+  console.log("✓ applyLoadedDoc truncates and flags an aspect change");
+}
+
 console.log("All grade checks passed.");

@@ -10,6 +10,7 @@ import {
   Play,
   Redo2,
   Save,
+  Trash2,
   Undo2,
   Upload,
 } from "lucide-react";
@@ -27,6 +28,7 @@ import { ReframeDebugPanel } from "./reframe-debug-panel";
 import { checkExportSupport, type ExportQuality } from "@/lib/reframe/export";
 import {
   NO_MARK,
+  applyLoadedDoc,
   clamp,
   clearSegments,
   createDoc,
@@ -57,18 +59,24 @@ import {
 } from "@/lib/reframe/model";
 import { solveState } from "@/lib/reframe/solve";
 import { probeVideo } from "@/lib/reframe/probe";
+import { fingerprintVideo } from "@/lib/reframe/fingerprint";
+import { useAuth } from "@/components/auth-provider";
+import { useReframeAutosave, type SaveStatus } from "@/lib/hooks/use-reframe-autosave";
+import { getReframeDocument, listReframeDocuments } from "@/lib/supabase/queries";
+import { deleteReframeDocument } from "@/lib/supabase/mutations";
+import type { ReframeDocumentRow } from "@/lib/types";
 
 const DEFAULT_FPS = 30;
 
 /**
  * Number-key speed presets. The slow end is the point of this control: at 1× a
- * ball crosses the frame far too fast to tap accurately, so you drop to 0.5×
- * and click along with the action in something close to real time.
+ * ball crosses the frame far too fast to tap accurately, so you drop to 0.75×
+ * or 0.5× and click along with the action in something close to real time.
  *
  * -1 is reverse. Browsers reject a negative `playbackRate`, so it is simulated
  * by stepping `currentTime` backwards in the playback loop below.
  */
-const PRESET_RATES = [-1, 0.5, 1, 1.5, 2] as const;
+const PRESET_RATES = [-1, 0.5, 0.75, 1, 1.5, 2] as const;
 
 /*
  * S/D step through the forward presets. Stepping deliberately uses the same
@@ -91,9 +99,15 @@ interface Snapshot {
 }
 
 export function ReframeEditor() {
+  const { user } = useAuth();
   const [file, setFile] = React.useState<File | null>(null);
   const [src, setSrc] = React.useState<string | null>(null);
   const [doc, setDoc] = React.useState<ReframeDoc | null>(null);
+  // Identifies the open video so its saved edit can be found again. Null while
+  // it is still being computed, which is what gates the autosave.
+  const [fingerprint, setFingerprint] = React.useState<string | null>(null);
+  // Set when an edit came back from the server, so the header can say so.
+  const [restoredAt, setRestoredAt] = React.useState<string | null>(null);
   const [currentTime, setCurrentTime] = React.useState(0);
   const [playing, setPlaying] = React.useState(false);
   const [playbackRate, setPlaybackRate] = React.useState(1);
@@ -127,6 +141,10 @@ export function ReframeEditor() {
   // state for rendering.
   const docRef = React.useRef<ReframeDoc | null>(null);
   const dragKeyframeIdRef = React.useRef<string | null>(null);
+  // The autosave hook needs `doc`, so it is set up below loadFile — which in
+  // turn has to tell it "this document is already the saved one" after a
+  // restore. The ref bridges that ordering; it is filled from an effect.
+  const markSavedRef = React.useRef<((d: ReframeDoc | null) => void) | null>(null);
   const markRef = React.useRef<MarkState>(NO_MARK);
   const segmentsOnlyRef = React.useRef(false);
   const pendingJumpRef = React.useRef<number | null>(null);
@@ -208,15 +226,24 @@ export function ReframeEditor() {
     async (picked: File) => {
       setLoading(true);
       setError(null);
+      setRestoredAt(null);
+      setFingerprint(null);
       try {
-        const source = await probeVideo(picked);
+        // Probing already walks the file, so hashing alongside it costs nothing
+        // extra in wall-clock terms.
+        const [source, fp] = await Promise.all([
+          probeVideo(picked),
+          fingerprintVideo(picked),
+        ]);
         if (srcRef.current) URL.revokeObjectURL(srcRef.current);
         const url = URL.createObjectURL(picked);
         srcRef.current = url;
 
+        const blank = createDoc(source);
+
         setFile(picked);
         setSrc(url);
-        commit(createDoc(source));
+        commit(blank);
         setCurrentTime(0);
         setSelectedId(null);
         setSelectedSegmentId(null);
@@ -225,6 +252,39 @@ export function ReframeEditor() {
         setMark(NO_MARK);
         setPast([]);
         setFuture([]);
+
+        // Look for a previous edit of this exact footage. A failure here is
+        // never fatal: the blank document above is already usable, and saying
+        // "couldn't reach the server" beats refusing to open the clip.
+        let saved: ReframeDocumentRow | null = null;
+        try {
+          saved = await getReframeDocument(fp);
+        } catch {
+          setError("Couldn't load your saved edit for this clip. Editing still works.");
+        }
+
+        if (saved) {
+          try {
+            const { doc: merged, aspectMismatch } = applyLoadedDoc(
+              blank,
+              parseDoc(JSON.stringify(saved.doc)),
+            );
+            // A normal commit, so the blank document lands in the undo stack —
+            // one ⌘Z is the way back to a fresh start.
+            commit(merged);
+            markSavedRef.current?.(merged);
+            setRestoredAt(saved.updated_at);
+            if (aspectMismatch) {
+              setError(
+                "Your saved edit came from a video with a different aspect ratio — check the framing.",
+              );
+            }
+          } catch {
+            setError("Your saved edit for this clip could not be read, so it was skipped.");
+          }
+        }
+
+        setFingerprint(fp);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -233,6 +293,16 @@ export function ReframeEditor() {
     },
     [commit],
   );
+
+  const {
+    status: saveStatus,
+    error: saveError,
+    markSaved,
+  } = useReframeAutosave({ doc, fingerprint, userId: user?.id ?? null });
+
+  React.useEffect(() => {
+    markSavedRef.current = markSaved;
+  }, [markSaved]);
 
   /* ── Transport ───────────────────────────────────────────────────────── */
 
@@ -610,6 +680,7 @@ export function ReframeEditor() {
         case "3":
         case "4":
         case "5":
+        case "6":
           e.preventDefault();
           setPlaybackRate(PRESET_RATES[Number(e.key) - 1]);
           break;
@@ -738,7 +809,7 @@ export function ReframeEditor() {
 
   /* ── Document save / load ────────────────────────────────────────────── */
 
-  const saveDoc = () => {
+  const downloadDoc = () => {
     if (!doc) return;
     const blob = new Blob([serializeDoc(doc)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -753,34 +824,14 @@ export function ReframeEditor() {
     const current = docRef.current;
     if (!current) return;
     try {
-      const loaded = parseDoc(await jsonFile.text());
-      // Keyframe positions are normalised, so a document saved against a
-      // different encode of the same shot still applies. Keep the *loaded*
-      // video's real metadata and take only the framing from the file.
-      //
-      // Segment bounds are in seconds, though, so they are clamped to this
-      // video's duration and re-merged — a document from a longer source would
-      // otherwise carry segments that sit past the end and never render.
-      const segments = loaded.segments
-        .map((seg) => ({
-          ...seg,
-          start: Math.min(seg.start, current.source.duration),
-          end: Math.min(seg.end, current.source.duration),
-        }))
-        .filter((seg) => seg.end - seg.start > 0);
-      commit(
-        normaliseSegments({
-          ...current,
-          target: loaded.target,
-          keyframes: loaded.keyframes,
-          segments,
-        }),
+      const { doc: merged, aspectMismatch } = applyLoadedDoc(
+        current,
+        parseDoc(await jsonFile.text()),
       );
+      commit(merged);
       setSelectedId(null);
       setError(
-        Math.abs(
-          loaded.source.width / loaded.source.height - current.source.width / current.source.height,
-        ) > 0.01
+        aspectMismatch
           ? "Loaded keyframes came from a video with a different aspect ratio — check the framing."
           : null,
       );
@@ -821,6 +872,7 @@ export function ReframeEditor() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <SaveStatusBadge status={saveStatus} error={saveError} restoredAt={restoredAt} />
           <label className="cursor-pointer">
             <input
               type="file"
@@ -836,8 +888,14 @@ export function ReframeEditor() {
               <Upload className="h-4 w-4" /> Load
             </span>
           </label>
-          <Button variant="secondary" size="sm" onClick={saveDoc}>
-            <Save className="h-4 w-4" /> Save
+          {/* Your edits save themselves; this is for keeping a copy of one. */}
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={downloadDoc}
+            title="Download this edit as a .reframe.json file"
+          >
+            <Save className="h-4 w-4" /> Download
           </Button>
           <label className="cursor-pointer">
             <input
@@ -1095,6 +1153,139 @@ function FilePicker({
           {error}
         </p>
       )}
+
+      <SavedEditsList />
     </div>
   );
+}
+
+/**
+ * What is currently stored, so the picker is not a black box.
+ *
+ * It cannot open anything for you: a browser will not hand back access to a
+ * file granted in a session that has ended, so re-picking the clip is
+ * unavoidable. What it can do is confirm the work is safe, name the file to
+ * look for, and let you throw an edit away.
+ */
+function SavedEditsList() {
+  const [rows, setRows] = React.useState<ReframeDocumentRow[] | null>(null);
+  const [busyId, setBusyId] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let alive = true;
+    listReframeDocuments()
+      .then((r) => {
+        if (alive) setRows(r);
+      })
+      .catch(() => {
+        // Never block the picker on this — it is a convenience panel.
+        if (alive) setRows([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (!rows || rows.length === 0) return null;
+
+  return (
+    <section className="mt-8">
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+        Your saved edits
+      </h2>
+      <p className="mt-1 text-sm text-text-secondary">
+        Open one of these clips again and its edit comes back automatically.
+      </p>
+      <ul className="mt-3 divide-y divide-divider rounded-card bg-surface-high">
+        {rows.map((row) => (
+          <li key={row.id} className="flex items-center gap-3 px-3 py-2.5">
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm">{row.source_name}</p>
+              <p className="text-xs text-text-secondary">
+                {describeSavedDoc(row.doc)} · {formatSavedAt(row.updated_at)}
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={busyId === row.id}
+              onClick={async () => {
+                setBusyId(row.id);
+                try {
+                  await deleteReframeDocument(row.id);
+                  setRows((prev) => prev?.filter((r) => r.id !== row.id) ?? null);
+                } finally {
+                  setBusyId(null);
+                }
+              }}
+            >
+              <Trash2 className="h-4 w-4" /> Delete
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** "3 keyframes · 2 segments", read straight off the stored JSON. */
+function describeSavedDoc(raw: unknown): string {
+  const doc = raw as Partial<ReframeDoc> | null;
+  const keyframes = Array.isArray(doc?.keyframes) ? doc.keyframes.length : 0;
+  const segments = Array.isArray(doc?.segments) ? doc.segments.length : 0;
+  const parts = [`${keyframes} keyframe${keyframes === 1 ? "" : "s"}`];
+  if (segments > 0) parts.push(`${segments} segment${segments === 1 ? "" : "s"}`);
+  return parts.join(" · ");
+}
+
+function formatSavedAt(iso: string): string {
+  const d = new Date(iso);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
+}
+
+/**
+ * Autosave state, in the header beside the manual controls.
+ *
+ * Silent while idle: a badge that says "nothing has happened" is noise. The
+ * failure case is the one that has to be loud, because the whole promise of
+ * this feature is that you can stop thinking about saving.
+ */
+function SaveStatusBadge({
+  status,
+  error,
+  restoredAt,
+}: {
+  status: SaveStatus;
+  error: string | null;
+  restoredAt: string | null;
+}) {
+  if (status === "error") {
+    return (
+      <span
+        className="rounded-pill bg-destructive/15 px-2.5 py-1 text-xs text-destructive"
+        title={error ?? undefined}
+      >
+        Not saved
+      </span>
+    );
+  }
+  if (status === "saving") {
+    return <span className="text-xs text-text-secondary">Saving…</span>;
+  }
+  if (status === "saved") {
+    return <span className="text-xs text-text-secondary">Saved</span>;
+  }
+  if (restoredAt) {
+    return (
+      <span className="rounded-pill bg-accent-muted px-2.5 py-1 text-xs text-accent">
+        Restored from {formatSavedAt(restoredAt)}
+      </span>
+    );
+  }
+  return null;
 }

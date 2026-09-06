@@ -379,6 +379,52 @@ export function parseDoc(json: string): ReframeDoc {
 }
 
 /**
+ * Fit a saved document onto the video that is actually open.
+ *
+ * Two callers rely on this and must not drift apart: importing a `.reframe.json`
+ * by hand, and restoring the autosaved copy when a file is recognised. Both
+ * arrive at the same problem — a document written elsewhere, against footage
+ * that may not be byte-identical to what is loaded now.
+ *
+ * Keyframe positions are normalised, so a document saved against a different
+ * encode of the same shot still applies; the *loaded* video's real metadata is
+ * kept and only the framing is taken from the document. Segment bounds are in
+ * seconds, though, so they are clamped to this video's duration and re-merged —
+ * a document from a longer source would otherwise carry segments sitting past
+ * the end that never render.
+ *
+ * `aspectMismatch` is advisory: differing aspect ratios mean the framing will
+ * look wrong, but it is not a reason to refuse the document.
+ */
+export function applyLoadedDoc(
+  current: ReframeDoc,
+  loaded: ReframeDoc,
+): { doc: ReframeDoc; aspectMismatch: boolean } {
+  const segments = loaded.segments
+    .map((seg) => ({
+      ...seg,
+      start: Math.min(seg.start, current.source.duration),
+      end: Math.min(seg.end, current.source.duration),
+    }))
+    .filter((seg) => seg.end - seg.start > 0);
+
+  const doc = normaliseSegments({
+    ...current,
+    target: loaded.target,
+    keyframes: loaded.keyframes,
+    segments,
+  });
+
+  const aspectMismatch =
+    Math.abs(
+      loaded.source.width / loaded.source.height -
+        current.source.width / current.source.height,
+    ) > 0.01;
+
+  return { doc, aspectMismatch };
+}
+
+/**
  * Read the `segments` array of a saved document, repairing rather than
  * rejecting: a missing key means "no segments", and overlapping or reversed
  * ranges from a hand-edited file are merged and clamped into shape. This

@@ -1,18 +1,28 @@
 "use client";
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth-provider";
 import { Logo } from "@/components/logo";
 import { Button } from "@/components/ui/button";
 import { Input, Field } from "@/components/ui/input";
-import { Spinner } from "@/components/ui/spinner";
+import { CenteredSpinner, Spinner } from "@/components/ui/spinner";
 
 type Mode = "signin" | "register" | "forgot";
 
-export default function LoginPage() {
+/**
+ * Only same-origin paths are accepted as a post-sign-in destination — "//host"
+ * is a protocol-relative URL and would be an open redirect.
+ */
+function safeNext(value: string | null): string | null {
+  if (!value || !value.startsWith("/") || value.startsWith("//")) return null;
+  return value;
+}
+
+function LoginForm() {
   const { user, signIn, signUp, resetPassword } = useAuth();
   const router = useRouter();
+  const next = safeNext(useSearchParams().get("next"));
 
   const [mode, setMode] = React.useState<Mode>("signin");
   const [email, setEmail] = React.useState("");
@@ -24,8 +34,8 @@ export default function LoginPage() {
   const [notice, setNotice] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    if (user) router.replace("/");
-  }, [user, router]);
+    if (user) router.replace(next ?? "/");
+  }, [user, next, router]);
 
   function switchTo(next: Mode) {
     setMode(next);
@@ -190,5 +200,14 @@ export default function LoginPage() {
         </div>
       </form>
     </div>
+  );
+}
+
+// useSearchParams() needs a Suspense boundary to prerender under `output: export`.
+export default function LoginPage() {
+  return (
+    <React.Suspense fallback={<CenteredSpinner />}>
+      <LoginForm />
+    </React.Suspense>
   );
 }

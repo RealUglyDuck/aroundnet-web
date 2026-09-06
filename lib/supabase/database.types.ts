@@ -596,6 +596,53 @@ export type Database = {
         }
         Relationships: []
       }
+      reframe_documents: {
+        Row: {
+          created_at: string
+          created_by: string
+          doc: Json
+          duration: number | null
+          fingerprint: string
+          height: number | null
+          id: string
+          source_name: string
+          updated_at: string
+          width: number | null
+        }
+        Insert: {
+          created_at?: string
+          created_by: string
+          doc: Json
+          duration?: number | null
+          fingerprint: string
+          height?: number | null
+          id?: string
+          source_name: string
+          updated_at?: string
+          width?: number | null
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          doc?: Json
+          duration?: number | null
+          fingerprint?: string
+          height?: number | null
+          id?: string
+          source_name?: string
+          updated_at?: string
+          width?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "reframe_documents_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "players"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       sets: {
         Row: {
           created_at: string

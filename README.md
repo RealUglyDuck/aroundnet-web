@@ -75,14 +75,14 @@ touched, and "play segments only" previews the result without committing to it.
 Shortcuts are laid out for the left hand, so the right stays on the mouse:
 
 ```
-A F         mark in / out            1 2 3 4 5   speed: reverse · 0.5× · 1× · 1.5× · 2×
+A F         mark in / out            1 2 3 4 5 6 speed: reverse · 0.5× · 0.75× · 1× · 1.5× · 2×
 S D         speed down / up          G           keyframe at playhead
 Q W         frame back / forward     T           play segments only
 E R         −1s / +1s                Esc         drop the open in-point
 ⇧A          force-move the in-point  ⌘Z          undo (⇧⌘Z redo)
 ```
 
-`S`/`D` step through the same five presets the number keys select, so the speed row
+`S`/`D` step through the same presets the number keys select, so the speed row
 always shows which one you are on.
 
 "Play segments only" (`T`) also switches the timeline into **reel view**: the gaps are

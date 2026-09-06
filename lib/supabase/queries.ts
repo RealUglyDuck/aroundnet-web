@@ -14,6 +14,7 @@ import type {
   StandingRow,
   TournamentTeamRow,
   OrgRole,
+  ReframeDocumentRow,
 } from "../types";
 import { sortStandings } from "../types";
 
@@ -565,3 +566,29 @@ function emptyRes<T>() {
 type GroupMatchesGroupRow = GroupVM & { stage_id: string; id: string };
 type BracketRowLite = BracketVM & { stage_id: string; id: string };
 void nonEmpty;
+
+// ── Reframe documents ────────────────────────────────────────────────────────
+// Keyed by a content fingerprint of the source video (lib/reframe/fingerprint.ts),
+// so re-picking the same file finds the edit made against it. RLS restricts
+// every row to its author, so neither of these needs a user filter.
+
+export async function getReframeDocument(
+  fingerprint: string,
+): Promise<ReframeDocumentRow | null> {
+  const { data, error } = await supabase
+    .from("reframe_documents")
+    .select("*")
+    .eq("fingerprint", fingerprint)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+export async function listReframeDocuments(): Promise<ReframeDocumentRow[]> {
+  const { data, error } = await supabase
+    .from("reframe_documents")
+    .select("*")
+    .order("updated_at", { ascending: false });
+  if (error) throw error;
+  return data ?? [];
+}
