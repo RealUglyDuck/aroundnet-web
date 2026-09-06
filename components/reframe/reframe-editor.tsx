@@ -310,8 +310,22 @@ export function ReframeEditor() {
     const video = videoRef.current;
     const duration = docRef.current?.source.duration ?? 0;
     const clamped = Math.min(duration, Math.max(0, t));
+    // A seek supersedes any gap skip still waiting to land; left set, a stale
+    // target suppresses skipping until playback passes it again.
+    pendingJumpRef.current = null;
     if (video) video.currentTime = clamped;
     setCurrentTime(clamped);
+  }, []);
+
+  /**
+   * Safari rejects `play()` with an AbortError when a seek is still resolving —
+   * nudging back with E and hitting Space immediately is enough to hit it. The
+   * rejection used to be discarded, which left `playing` true against a paused
+   * element: the loop below span on a `currentTime` that never moved, and the
+   * next command resumed from wherever the seek had settled.
+   */
+  const startPlayback = React.useCallback((video: HTMLVideoElement) => {
+    video.play().catch(() => setPlaying(false));
   }, []);
 
   const togglePlay = React.useCallback(() => {
@@ -323,9 +337,9 @@ export function ReframeEditor() {
       return;
     }
     // In reverse the element stays paused and the rAF loop drives currentTime.
-    if (playbackRate > 0) void video.play();
+    if (playbackRate > 0) startPlayback(video);
     setPlaying(true);
-  }, [playbackRate, playing]);
+  }, [playbackRate, playing, startPlayback]);
 
   const step = React.useCallback(
     (frames: number) => {
@@ -350,14 +364,42 @@ export function ReframeEditor() {
   React.useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    if (playbackRate > 0) {
-      video.playbackRate = playbackRate;
-      if (playing && video.paused) void video.play();
-    } else {
+    if (playbackRate < 0) {
       // Reverse is driven by the loop below, so the element must stay paused.
       video.pause();
+      return;
     }
-  }, [playbackRate, playing, src]);
+
+    let cancelled = false;
+    const apply = () => {
+      if (cancelled) return;
+      // Writing `playbackRate` mid-seek makes Safari re-prime its decoder and
+      // drop the seek still in flight, which is how a nudge backwards came
+      // back as a jump forwards. Wait for the seek to land first.
+      if (video.seeking) {
+        video.addEventListener("seeked", apply, { once: true });
+        return;
+      }
+      // Pausing across the change keeps the resume anchored to the frame on
+      // screen rather than to a position the element drifted to while the
+      // pipeline restarted at the new rate. Strictly on a *change* of rate:
+      // this effect also runs when play starts, and pausing there would abort
+      // the play() still in flight and stop playback outright.
+      if (video.playbackRate !== playbackRate) {
+        const at = video.currentTime;
+        if (!video.paused) video.pause();
+        video.playbackRate = playbackRate;
+        if (Math.abs(video.currentTime - at) > 0.01) video.currentTime = at;
+      }
+      if (playing && video.paused) startPlayback(video);
+    };
+    apply();
+
+    return () => {
+      cancelled = true;
+      video.removeEventListener("seeked", apply);
+    };
+  }, [playbackRate, playing, src, startPlayback]);
 
   const nudgeRate = React.useCallback((direction: -1 | 1) => {
     setPlaybackRate((prev) => stepRate(PRESET_RATES, prev, direction));
@@ -682,7 +724,7 @@ export function ReframeEditor() {
         case "5":
         case "6":
           e.preventDefault();
-          setPlaybackRate(PRESET_RATES[Number(e.key) - 1]);
+          if (!e.repeat) setPlaybackRate(PRESET_RATES[Number(e.key) - 1]);
           break;
 
         // Marking sits at the outer ends of the home row, with the speed keys
@@ -695,15 +737,17 @@ export function ReframeEditor() {
           // an in-point could never be set far ahead of an open draft.
           applyMark(e.shiftKey ? forceMarkIn : markIn);
           break;
+        // Auto-repeat is ignored: the ladder is short enough that a held key
+        // would race to the end, and each rung restarts the decode pipeline.
         case "s":
         case "S":
           e.preventDefault();
-          nudgeRate(-1);
+          if (!e.repeat) nudgeRate(-1);
           break;
         case "d":
         case "D":
           e.preventDefault();
-          nudgeRate(1);
+          if (!e.repeat) nudgeRate(1);
           break;
         case "f":
         case "F":
