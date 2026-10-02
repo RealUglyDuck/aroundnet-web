@@ -42,9 +42,11 @@ import {
   nextPlayTime,
   normaliseSegments,
   parseDoc,
+  reelToSourceTime,
   removeKeyframe,
   removeSegment,
   serializeDoc,
+  sourceToReelTimeClamped,
   findTargetPreset,
   TARGET_ASPECTS,
   TARGET_PRESETS,
@@ -148,6 +150,8 @@ export function ReframeEditor() {
   const markRef = React.useRef<MarkState>(NO_MARK);
   const segmentsOnlyRef = React.useRef(false);
   const pendingJumpRef = React.useRef<number | null>(null);
+  // Set while presented frames drive the playhead; see the effect below.
+  const frameDrivenRef = React.useRef(false);
   const resizingSegmentRef = React.useRef(false);
 
   /**
@@ -352,10 +356,22 @@ export function ReframeEditor() {
     [seek],
   );
 
-  /** Jump by whole seconds without stopping playback. */
+  /**
+   * Jump by whole seconds without stopping playback.
+   *
+   * Under "play segments only" the jump is measured in reel time, so it covers
+   * a second of the *output* and steps over the gaps rather than wandering
+   * into footage that is not in the reel. Off, it is a plain source-time jump.
+   */
   const nudgeSeconds = React.useCallback(
     (seconds: number) => {
-      seek((videoRef.current?.currentTime ?? 0) + seconds);
+      const t = videoRef.current?.currentTime ?? 0;
+      const current = docRef.current;
+      if (segmentsOnlyRef.current && current && current.segments.length > 0) {
+        seek(reelToSourceTime(current, sourceToReelTimeClamped(current, t) + seconds));
+        return;
+      }
+      seek(t + seconds);
     },
     [seek],
   );
@@ -419,6 +435,14 @@ export function ReframeEditor() {
     let raf = 0;
     let last = performance.now();
 
+    // `video.currentTime` is the playback position, which is what the gap skip
+    // has to be decided on — but it is not what is on screen: it reads back a
+    // seek target the moment it is assigned. Where the frame callback below is
+    // driving, it owns the playhead and this loop stays out of it.
+    const report = (time: number) => {
+      if (!frameDrivenRef.current) setCurrentTime(time);
+    };
+
     const tick = (now: number) => {
       const elapsed = (now - last) / 1000;
       last = now;
@@ -452,7 +476,7 @@ export function ReframeEditor() {
       const pending = pendingJumpRef.current;
       if (pending !== null) {
         if (t < pending - 0.05) {
-          setCurrentTime(t);
+          report(t);
           raf = requestAnimationFrame(tick);
           return;
         }
@@ -471,21 +495,59 @@ export function ReframeEditor() {
           return;
         }
         if (target > t + 0.02) {
+          // Deliberately no report(): the skip is issued off the *playback*
+          // position, but nothing on screen has moved yet.
           pendingJumpRef.current = target;
           video.currentTime = target;
-          setCurrentTime(target);
           raf = requestAnimationFrame(tick);
           return;
         }
       }
 
-      setCurrentTime(t);
+      report(t);
       raf = requestAnimationFrame(tick);
     };
 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [playbackRate, playing]);
+
+  /**
+   * The playhead, driven by the frames the browser actually puts on screen.
+   *
+   * Everything visual hangs off `currentTime`: the crop rect over the stage
+   * and the 9:16 preview both solve their framing from it. Sourced from
+   * `video.currentTime` they run ahead of the picture at a segment cut, since
+   * assigning a seek target updates the reported position immediately while
+   * the element keeps showing the outgoing frame — the framing changed a frame
+   * or two before the footage did. `mediaTime` is the presentation time of the
+   * frame being shown, so the two cannot disagree.
+   *
+   * Forward playback only: reverse is stepped by the loop above, which sets
+   * the position itself and would fight a second writer. Where the callback is
+   * unavailable (Firefox) the loop keeps reporting and behaviour is unchanged.
+   */
+  React.useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !playing || playbackRate < 0) return;
+    if (!("requestVideoFrameCallback" in video)) return;
+
+    frameDrivenRef.current = true;
+    let handle = 0;
+    let cancelled = false;
+    const onFrame: VideoFrameRequestCallback = (_now, metadata) => {
+      if (cancelled) return;
+      setCurrentTime(metadata.mediaTime);
+      handle = video.requestVideoFrameCallback(onFrame);
+    };
+    handle = video.requestVideoFrameCallback(onFrame);
+
+    return () => {
+      cancelled = true;
+      frameDrivenRef.current = false;
+      video.cancelVideoFrameCallback(handle);
+    };
+  }, [playbackRate, playing, src]);
 
   /* ── Editing ─────────────────────────────────────────────────────────── */
 

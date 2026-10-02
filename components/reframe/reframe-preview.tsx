@@ -25,8 +25,22 @@ export function ReframePreview({ doc, videoRef, currentTime, playing, className 
   // Read the doc through a ref inside the animation loop so the loop doesn't
   // have to be torn down and rebuilt on every keyframe edit.
   const docRef = React.useRef(doc);
+  // Presentation time of the frame currently on the canvas. Every draw is
+  // solved against this, so the crop can never disagree with the pixels.
+  const presentedRef = React.useRef<number | null>(null);
 
-  const draw = React.useCallback(() => {
+  /**
+   * `atTime` is the presentation time of the frame `drawImage` is about to
+   * copy. Everything else falls back to the last frame presented, and only to
+   * `video.currentTime` when no frame has been seen at all.
+   *
+   * The distinction is the whole game here. `video.currentTime` is the
+   * playback position, which runs ahead of the picture — by the pipeline's
+   * latency in general, by a whole seek across a segment cut. Drawing some
+   * frames against one clock and some against the other put two different crop
+   * positions on the canvas on alternate frames, which read as a shake.
+   */
+  const draw = React.useCallback((atTime?: number) => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
     const d = docRef.current;
@@ -35,7 +49,7 @@ export function ReframePreview({ doc, videoRef, currentTime, playing, className 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const crop = solveCrop(d, video.currentTime);
+    const crop = solveCrop(d, atTime ?? presentedRef.current ?? video.currentTime);
     // The video element's intrinsic size is the ground truth for drawImage;
     // rescale in case it disagrees with the probed display size.
     const sx = video.videoWidth / d.source.width;
@@ -67,10 +81,35 @@ export function ReframePreview({ doc, videoRef, currentTime, playing, className 
     if (filter) ctx.filter = "none";
   }, [videoRef]);
 
-  // Only loop while playing. Redrawing every frame forever costs real work for
-  // nothing while paused, and it competes with scrubbing for the main thread.
+  // Redraw when the browser presents a frame — playing or not, since a seek
+  // presents one too. Nothing fires while the picture is unchanged, so this
+  // costs nothing while paused and matches the video's rate while playing
+  // rather than the display's.
   React.useEffect(() => {
-    if (!playing) return;
+    const video = videoRef.current;
+    if (!video || !("requestVideoFrameCallback" in video)) return;
+
+    let handle = 0;
+    let cancelled = false;
+    const onFrame: VideoFrameRequestCallback = (_now, metadata) => {
+      if (cancelled) return;
+      presentedRef.current = metadata.mediaTime;
+      draw(metadata.mediaTime);
+      handle = video.requestVideoFrameCallback(onFrame);
+    };
+    handle = video.requestVideoFrameCallback(onFrame);
+
+    return () => {
+      cancelled = true;
+      video.cancelVideoFrameCallback(handle);
+    };
+  }, [draw, videoRef]);
+
+  // Firefox has no frame callback: fall back to the display-rate loop while
+  // playing, which can only ever be as accurate as `video.currentTime`.
+  React.useEffect(() => {
+    const video = videoRef.current;
+    if (!playing || !video || "requestVideoFrameCallback" in video) return;
     let frame = 0;
     const tick = () => {
       draw();
@@ -78,15 +117,16 @@ export function ReframePreview({ doc, videoRef, currentTime, playing, className 
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [draw, playing]);
+  }, [draw, playing, videoRef]);
 
   // While paused, redraw when the frame actually arrives. A seek is async, so
   // drawing only on the currentTime change would show the previous frame.
   React.useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    video.addEventListener("seeked", draw);
-    return () => video.removeEventListener("seeked", draw);
+    const redraw = () => draw();
+    video.addEventListener("seeked", redraw);
+    return () => video.removeEventListener("seeked", redraw);
   }, [draw, videoRef]);
 
   // Publish the latest doc to the loop, and redraw immediately on an edit so

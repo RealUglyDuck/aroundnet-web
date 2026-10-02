@@ -24,10 +24,16 @@ function nonEmpty<T>(ids: T[]): T[] | null {
 }
 
 // ── Landing list ─────────────────────────────────────────────────────────────
+/**
+ * Every tournament worth listing. Archived ones are left out: their organiser
+ * has put them away once they were played, and their page stays reachable by
+ * link (see docs/tournament-archiving.md in aroundnet-supabase).
+ */
 export async function listTournaments(): Promise<TournamentRow[]> {
   const { data, error } = await supabase
     .from("tournaments")
     .select("*")
+    .is("archived_at", null)
     .order("start_date", { ascending: true, nullsFirst: false });
   if (error) throw error;
   return data ?? [];

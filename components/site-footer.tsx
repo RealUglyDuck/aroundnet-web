@@ -33,6 +33,12 @@ export function SiteFooter() {
           >
             iOS app
           </a>
+          <Link href="/privacy/" className="hover:text-text-primary">
+            Privacy
+          </Link>
+          <Link href="/terms/" className="hover:text-text-primary">
+            Terms
+          </Link>
         </nav>
       </div>
 

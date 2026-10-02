@@ -224,6 +224,62 @@ export type Database = {
           },
         ]
       }
+      entitlements: {
+        Row: {
+          created_at: string
+          entitlement: string
+          environment: string | null
+          expires_at: string | null
+          is_active: boolean
+          last_event_id: string | null
+          product_id: string | null
+          purchased_at: string | null
+          status: string | null
+          store: string | null
+          updated_at: string
+          user_id: string
+          will_renew: boolean | null
+        }
+        Insert: {
+          created_at?: string
+          entitlement?: string
+          environment?: string | null
+          expires_at?: string | null
+          is_active?: boolean
+          last_event_id?: string | null
+          product_id?: string | null
+          purchased_at?: string | null
+          status?: string | null
+          store?: string | null
+          updated_at?: string
+          user_id: string
+          will_renew?: boolean | null
+        }
+        Update: {
+          created_at?: string
+          entitlement?: string
+          environment?: string | null
+          expires_at?: string | null
+          is_active?: boolean
+          last_event_id?: string | null
+          product_id?: string | null
+          purchased_at?: string | null
+          status?: string | null
+          store?: string | null
+          updated_at?: string
+          user_id?: string
+          will_renew?: boolean | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "entitlements_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "players"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       group_matches: {
         Row: {
           created_at: string | null
@@ -368,6 +424,7 @@ export type Database = {
           status: Database["public"]["Enums"]["match_status"]
           team_a_id: string | null
           team_b_id: string | null
+          tournament_id: string
           updated_at: string
           winner_id: string | null
         }
@@ -384,6 +441,7 @@ export type Database = {
           status?: Database["public"]["Enums"]["match_status"]
           team_a_id?: string | null
           team_b_id?: string | null
+          tournament_id: string
           updated_at?: string
           winner_id?: string | null
         }
@@ -400,6 +458,7 @@ export type Database = {
           status?: Database["public"]["Enums"]["match_status"]
           team_a_id?: string | null
           team_b_id?: string | null
+          tournament_id?: string
           updated_at?: string
           winner_id?: string | null
         }
@@ -444,6 +503,13 @@ export type Database = {
             columns: ["team_b_id"]
             isOneToOne: false
             referencedRelation: "tournament_teams"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "matches_tournament_id_fkey"
+            columns: ["tournament_id"]
+            isOneToOne: false
+            referencedRelation: "tournaments"
             referencedColumns: ["id"]
           },
           {
@@ -605,6 +671,7 @@ export type Database = {
           fingerprint: string
           height: number | null
           id: string
+          ios_asset_identifier: string | null
           source_name: string
           updated_at: string
           width: number | null
@@ -617,6 +684,7 @@ export type Database = {
           fingerprint: string
           height?: number | null
           id?: string
+          ios_asset_identifier?: string | null
           source_name: string
           updated_at?: string
           width?: number | null
@@ -629,6 +697,7 @@ export type Database = {
           fingerprint?: string
           height?: number | null
           id?: string
+          ios_asset_identifier?: string | null
           source_name?: string
           updated_at?: string
           width?: number | null
@@ -1026,6 +1095,7 @@ export type Database = {
       }
       tournaments: {
         Row: {
+          archived_at: string | null
           banner_url: string | null
           created_at: string
           created_by: string
@@ -1051,6 +1121,7 @@ export type Database = {
           visibility: Database["public"]["Enums"]["tournament_visibility"]
         }
         Insert: {
+          archived_at?: string | null
           banner_url?: string | null
           created_at?: string
           created_by: string
@@ -1076,6 +1147,7 @@ export type Database = {
           visibility?: Database["public"]["Enums"]["tournament_visibility"]
         }
         Update: {
+          archived_at?: string | null
           banner_url?: string | null
           created_at?: string
           created_by?: string
@@ -1460,6 +1532,7 @@ export type Database = {
       }
       geomfromewkt: { Args: { "": string }; Returns: unknown }
       gettransactionid: { Args: never; Returns: unknown }
+      has_pro: { Args: { p_entitlement?: string }; Returns: boolean }
       is_match_player: { Args: { m_id: string }; Returns: boolean }
       is_org_admin: { Args: { o_id: string }; Returns: boolean }
       is_team_captain: { Args: { t_id: string }; Returns: boolean }
@@ -2099,6 +2172,7 @@ export type Database = {
         Args: { geom: unknown; move: number; wrap: number }
         Returns: unknown
       }
+      tournament_has_results: { Args: { t_id: string }; Returns: boolean }
       unlockrows: { Args: { "": string }; Returns: number }
       updategeometrysrid: {
         Args: {

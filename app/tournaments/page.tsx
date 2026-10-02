@@ -14,7 +14,8 @@ import { Chip } from "@/components/ui/chip";
 import { Input } from "@/components/ui/input";
 import { CenteredSpinner } from "@/components/ui/spinner";
 
-type Filter = "all" | "upcoming" | "mine";
+// Upcoming first: a list led by last season's events looks abandoned.
+type Filter = "upcoming" | "past" | "mine";
 
 export default function TournamentsPage() {
   const { user } = useAuth();
@@ -22,7 +23,7 @@ export default function TournamentsPage() {
   const [tournaments, setTournaments] = React.useState<TournamentRow[] | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [query, setQuery] = React.useState("");
-  const [filter, setFilter] = React.useState<Filter>("all");
+  const [filter, setFilter] = React.useState<Filter>("upcoming");
 
   React.useEffect(() => {
     listTournaments()
@@ -41,6 +42,7 @@ export default function TournamentsPage() {
       )
         return false;
       if (filter === "upcoming" && !isUpcoming(t.start_date, t.end_date)) return false;
+      if (filter === "past" && isUpcoming(t.start_date, t.end_date)) return false;
       if (filter === "mine" && t.created_by !== user?.id) return false;
       return true;
     });
@@ -83,11 +85,11 @@ export default function TournamentsPage() {
           />
         </div>
         <div className="flex gap-2">
-          <Chip selected={filter === "all"} onClick={() => setFilter("all")}>
-            All
-          </Chip>
           <Chip selected={filter === "upcoming"} onClick={() => setFilter("upcoming")}>
             Upcoming
+          </Chip>
+          <Chip selected={filter === "past"} onClick={() => setFilter("past")}>
+            Past
           </Chip>
           {user && (
             <Chip selected={filter === "mine"} onClick={() => setFilter("mine")}>
