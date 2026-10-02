@@ -621,13 +621,10 @@ export type Database = {
           city: string | null
           country: string | null
           created_at: string
-          date_of_birth: string | null
           display_name: string | null
-          email: string | null
           first_name: string
           id: string
           last_name: string
-          phone: string | null
           updated_at: string
         }
         Insert: {
@@ -636,13 +633,10 @@ export type Database = {
           city?: string | null
           country?: string | null
           created_at?: string
-          date_of_birth?: string | null
           display_name?: string | null
-          email?: string | null
           first_name: string
           id: string
           last_name: string
-          phone?: string | null
           updated_at?: string
         }
         Update: {
@@ -651,13 +645,10 @@ export type Database = {
           city?: string | null
           country?: string | null
           created_at?: string
-          date_of_birth?: string | null
           display_name?: string | null
-          email?: string | null
           first_name?: string
           id?: string
           last_name?: string
-          phone?: string | null
           updated_at?: string
         }
         Relationships: []
