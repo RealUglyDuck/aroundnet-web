@@ -477,11 +477,10 @@ export async function fetchPlayer(userId: string): Promise<{
   id: string;
   firstName: string;
   lastName: string;
-  email: string | null;
 } | null> {
   const { data, error } = await supabase
     .from("players")
-    .select("id, first_name, last_name, email")
+    .select("id, first_name, last_name")
     .eq("id", userId)
     .maybeSingle();
   if (error) throw error;
@@ -490,7 +489,6 @@ export async function fetchPlayer(userId: string): Promise<{
     id: data.id,
     firstName: data.first_name ?? "",
     lastName: data.last_name ?? "",
-    email: data.email,
   };
 }
 
