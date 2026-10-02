@@ -212,3 +212,46 @@ export async function setCheckIn(tournamentTeamId: string, checkedIn: boolean) {
     .eq("id", tournamentTeamId);
   if (error) throw error;
 }
+
+// ── Reframe documents ────────────────────────────────────────────────────────
+
+export interface SaveReframeDocumentInput {
+  userId: string;
+  /** Content hash of the source video — see lib/reframe/fingerprint.ts. */
+  fingerprint: string;
+  sourceName: string;
+  duration?: number | null;
+  width?: number | null;
+  height?: number | null;
+  /** A serialised ReframeDoc, already validated by the caller. */
+  doc: unknown;
+}
+
+/**
+ * Write the edit for one (user, file) pair.
+ *
+ * The only upsert in this codebase: the editor autosaves without knowing
+ * whether a row exists yet, and `(created_by, fingerprint)` is unique, so
+ * letting Postgres decide beats a read-then-branch that can race with itself.
+ * `updated_at` is left to the table's trigger.
+ */
+export async function upsertReframeDocument(input: SaveReframeDocumentInput) {
+  const { error } = await supabase.from("reframe_documents").upsert(
+    {
+      created_by: input.userId,
+      fingerprint: input.fingerprint,
+      source_name: input.sourceName,
+      duration: input.duration ?? null,
+      width: input.width ?? null,
+      height: input.height ?? null,
+      doc: input.doc as never,
+    },
+    { onConflict: "created_by,fingerprint" },
+  );
+  if (error) throw error;
+}
+
+export async function deleteReframeDocument(id: string) {
+  const { error } = await supabase.from("reframe_documents").delete().eq("id", id);
+  if (error) throw error;
+}

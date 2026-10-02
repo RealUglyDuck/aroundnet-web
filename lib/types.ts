@@ -21,6 +21,7 @@ export type PlayerRow = Tables["players"]["Row"];
 export type OrganisationRow = Tables["organisations"]["Row"];
 export type OrganisationMemberRow = Tables["organisation_members"]["Row"];
 export type StandingRow = Views["group_standings"]["Row"];
+export type ReframeDocumentRow = Tables["reframe_documents"]["Row"];
 
 export type StageType = Enums["stage_type"];
 export type MatchStatus = Enums["match_status"];

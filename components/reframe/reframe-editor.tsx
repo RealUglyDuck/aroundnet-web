@@ -10,6 +10,7 @@ import {
   Play,
   Redo2,
   Save,
+  Trash2,
   Undo2,
   Upload,
 } from "lucide-react";
@@ -27,6 +28,7 @@ import { ReframeDebugPanel } from "./reframe-debug-panel";
 import { checkExportSupport, type ExportQuality } from "@/lib/reframe/export";
 import {
   NO_MARK,
+  applyLoadedDoc,
   clamp,
   clearSegments,
   createDoc,
@@ -40,9 +42,11 @@ import {
   nextPlayTime,
   normaliseSegments,
   parseDoc,
+  reelToSourceTime,
   removeKeyframe,
   removeSegment,
   serializeDoc,
+  sourceToReelTimeClamped,
   findTargetPreset,
   TARGET_ASPECTS,
   TARGET_PRESETS,
@@ -57,18 +61,24 @@ import {
 } from "@/lib/reframe/model";
 import { solveState } from "@/lib/reframe/solve";
 import { probeVideo } from "@/lib/reframe/probe";
+import { fingerprintVideo } from "@/lib/reframe/fingerprint";
+import { useAuth } from "@/components/auth-provider";
+import { useReframeAutosave, type SaveStatus } from "@/lib/hooks/use-reframe-autosave";
+import { getReframeDocument, listReframeDocuments } from "@/lib/supabase/queries";
+import { deleteReframeDocument } from "@/lib/supabase/mutations";
+import type { ReframeDocumentRow } from "@/lib/types";
 
 const DEFAULT_FPS = 30;
 
 /**
  * Number-key speed presets. The slow end is the point of this control: at 1× a
- * ball crosses the frame far too fast to tap accurately, so you drop to 0.5×
- * and click along with the action in something close to real time.
+ * ball crosses the frame far too fast to tap accurately, so you drop to 0.75×
+ * or 0.5× and click along with the action in something close to real time.
  *
  * -1 is reverse. Browsers reject a negative `playbackRate`, so it is simulated
  * by stepping `currentTime` backwards in the playback loop below.
  */
-const PRESET_RATES = [-1, 0.5, 1, 1.5, 2] as const;
+const PRESET_RATES = [-1, 0.5, 0.75, 1, 1.5, 2] as const;
 
 /*
  * S/D step through the forward presets. Stepping deliberately uses the same
@@ -91,9 +101,15 @@ interface Snapshot {
 }
 
 export function ReframeEditor() {
+  const { user } = useAuth();
   const [file, setFile] = React.useState<File | null>(null);
   const [src, setSrc] = React.useState<string | null>(null);
   const [doc, setDoc] = React.useState<ReframeDoc | null>(null);
+  // Identifies the open video so its saved edit can be found again. Null while
+  // it is still being computed, which is what gates the autosave.
+  const [fingerprint, setFingerprint] = React.useState<string | null>(null);
+  // Set when an edit came back from the server, so the header can say so.
+  const [restoredAt, setRestoredAt] = React.useState<string | null>(null);
   const [currentTime, setCurrentTime] = React.useState(0);
   const [playing, setPlaying] = React.useState(false);
   const [playbackRate, setPlaybackRate] = React.useState(1);
@@ -127,9 +143,15 @@ export function ReframeEditor() {
   // state for rendering.
   const docRef = React.useRef<ReframeDoc | null>(null);
   const dragKeyframeIdRef = React.useRef<string | null>(null);
+  // The autosave hook needs `doc`, so it is set up below loadFile — which in
+  // turn has to tell it "this document is already the saved one" after a
+  // restore. The ref bridges that ordering; it is filled from an effect.
+  const markSavedRef = React.useRef<((d: ReframeDoc | null) => void) | null>(null);
   const markRef = React.useRef<MarkState>(NO_MARK);
   const segmentsOnlyRef = React.useRef(false);
   const pendingJumpRef = React.useRef<number | null>(null);
+  // Set while presented frames drive the playhead; see the effect below.
+  const frameDrivenRef = React.useRef(false);
   const resizingSegmentRef = React.useRef(false);
 
   /**
@@ -208,15 +230,24 @@ export function ReframeEditor() {
     async (picked: File) => {
       setLoading(true);
       setError(null);
+      setRestoredAt(null);
+      setFingerprint(null);
       try {
-        const source = await probeVideo(picked);
+        // Probing already walks the file, so hashing alongside it costs nothing
+        // extra in wall-clock terms.
+        const [source, fp] = await Promise.all([
+          probeVideo(picked),
+          fingerprintVideo(picked),
+        ]);
         if (srcRef.current) URL.revokeObjectURL(srcRef.current);
         const url = URL.createObjectURL(picked);
         srcRef.current = url;
 
+        const blank = createDoc(source);
+
         setFile(picked);
         setSrc(url);
-        commit(createDoc(source));
+        commit(blank);
         setCurrentTime(0);
         setSelectedId(null);
         setSelectedSegmentId(null);
@@ -225,6 +256,39 @@ export function ReframeEditor() {
         setMark(NO_MARK);
         setPast([]);
         setFuture([]);
+
+        // Look for a previous edit of this exact footage. A failure here is
+        // never fatal: the blank document above is already usable, and saying
+        // "couldn't reach the server" beats refusing to open the clip.
+        let saved: ReframeDocumentRow | null = null;
+        try {
+          saved = await getReframeDocument(fp);
+        } catch {
+          setError("Couldn't load your saved edit for this clip. Editing still works.");
+        }
+
+        if (saved) {
+          try {
+            const { doc: merged, aspectMismatch } = applyLoadedDoc(
+              blank,
+              parseDoc(JSON.stringify(saved.doc)),
+            );
+            // A normal commit, so the blank document lands in the undo stack —
+            // one ⌘Z is the way back to a fresh start.
+            commit(merged);
+            markSavedRef.current?.(merged);
+            setRestoredAt(saved.updated_at);
+            if (aspectMismatch) {
+              setError(
+                "Your saved edit came from a video with a different aspect ratio — check the framing.",
+              );
+            }
+          } catch {
+            setError("Your saved edit for this clip could not be read, so it was skipped.");
+          }
+        }
+
+        setFingerprint(fp);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -234,14 +298,38 @@ export function ReframeEditor() {
     [commit],
   );
 
+  const {
+    status: saveStatus,
+    error: saveError,
+    markSaved,
+  } = useReframeAutosave({ doc, fingerprint, userId: user?.id ?? null });
+
+  React.useEffect(() => {
+    markSavedRef.current = markSaved;
+  }, [markSaved]);
+
   /* ── Transport ───────────────────────────────────────────────────────── */
 
   const seek = React.useCallback((t: number) => {
     const video = videoRef.current;
     const duration = docRef.current?.source.duration ?? 0;
     const clamped = Math.min(duration, Math.max(0, t));
+    // A seek supersedes any gap skip still waiting to land; left set, a stale
+    // target suppresses skipping until playback passes it again.
+    pendingJumpRef.current = null;
     if (video) video.currentTime = clamped;
     setCurrentTime(clamped);
+  }, []);
+
+  /**
+   * Safari rejects `play()` with an AbortError when a seek is still resolving —
+   * nudging back with E and hitting Space immediately is enough to hit it. The
+   * rejection used to be discarded, which left `playing` true against a paused
+   * element: the loop below span on a `currentTime` that never moved, and the
+   * next command resumed from wherever the seek had settled.
+   */
+  const startPlayback = React.useCallback((video: HTMLVideoElement) => {
+    video.play().catch(() => setPlaying(false));
   }, []);
 
   const togglePlay = React.useCallback(() => {
@@ -253,9 +341,9 @@ export function ReframeEditor() {
       return;
     }
     // In reverse the element stays paused and the rAF loop drives currentTime.
-    if (playbackRate > 0) void video.play();
+    if (playbackRate > 0) startPlayback(video);
     setPlaying(true);
-  }, [playbackRate, playing]);
+  }, [playbackRate, playing, startPlayback]);
 
   const step = React.useCallback(
     (frames: number) => {
@@ -268,10 +356,22 @@ export function ReframeEditor() {
     [seek],
   );
 
-  /** Jump by whole seconds without stopping playback. */
+  /**
+   * Jump by whole seconds without stopping playback.
+   *
+   * Under "play segments only" the jump is measured in reel time, so it covers
+   * a second of the *output* and steps over the gaps rather than wandering
+   * into footage that is not in the reel. Off, it is a plain source-time jump.
+   */
   const nudgeSeconds = React.useCallback(
     (seconds: number) => {
-      seek((videoRef.current?.currentTime ?? 0) + seconds);
+      const t = videoRef.current?.currentTime ?? 0;
+      const current = docRef.current;
+      if (segmentsOnlyRef.current && current && current.segments.length > 0) {
+        seek(reelToSourceTime(current, sourceToReelTimeClamped(current, t) + seconds));
+        return;
+      }
+      seek(t + seconds);
     },
     [seek],
   );
@@ -280,14 +380,42 @@ export function ReframeEditor() {
   React.useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    if (playbackRate > 0) {
-      video.playbackRate = playbackRate;
-      if (playing && video.paused) void video.play();
-    } else {
+    if (playbackRate < 0) {
       // Reverse is driven by the loop below, so the element must stay paused.
       video.pause();
+      return;
     }
-  }, [playbackRate, playing, src]);
+
+    let cancelled = false;
+    const apply = () => {
+      if (cancelled) return;
+      // Writing `playbackRate` mid-seek makes Safari re-prime its decoder and
+      // drop the seek still in flight, which is how a nudge backwards came
+      // back as a jump forwards. Wait for the seek to land first.
+      if (video.seeking) {
+        video.addEventListener("seeked", apply, { once: true });
+        return;
+      }
+      // Pausing across the change keeps the resume anchored to the frame on
+      // screen rather than to a position the element drifted to while the
+      // pipeline restarted at the new rate. Strictly on a *change* of rate:
+      // this effect also runs when play starts, and pausing there would abort
+      // the play() still in flight and stop playback outright.
+      if (video.playbackRate !== playbackRate) {
+        const at = video.currentTime;
+        if (!video.paused) video.pause();
+        video.playbackRate = playbackRate;
+        if (Math.abs(video.currentTime - at) > 0.01) video.currentTime = at;
+      }
+      if (playing && video.paused) startPlayback(video);
+    };
+    apply();
+
+    return () => {
+      cancelled = true;
+      video.removeEventListener("seeked", apply);
+    };
+  }, [playbackRate, playing, src, startPlayback]);
 
   const nudgeRate = React.useCallback((direction: -1 | 1) => {
     setPlaybackRate((prev) => stepRate(PRESET_RATES, prev, direction));
@@ -306,6 +434,14 @@ export function ReframeEditor() {
     if (!playing) return;
     let raf = 0;
     let last = performance.now();
+
+    // `video.currentTime` is the playback position, which is what the gap skip
+    // has to be decided on — but it is not what is on screen: it reads back a
+    // seek target the moment it is assigned. Where the frame callback below is
+    // driving, it owns the playhead and this loop stays out of it.
+    const report = (time: number) => {
+      if (!frameDrivenRef.current) setCurrentTime(time);
+    };
 
     const tick = (now: number) => {
       const elapsed = (now - last) / 1000;
@@ -340,7 +476,7 @@ export function ReframeEditor() {
       const pending = pendingJumpRef.current;
       if (pending !== null) {
         if (t < pending - 0.05) {
-          setCurrentTime(t);
+          report(t);
           raf = requestAnimationFrame(tick);
           return;
         }
@@ -359,21 +495,59 @@ export function ReframeEditor() {
           return;
         }
         if (target > t + 0.02) {
+          // Deliberately no report(): the skip is issued off the *playback*
+          // position, but nothing on screen has moved yet.
           pendingJumpRef.current = target;
           video.currentTime = target;
-          setCurrentTime(target);
           raf = requestAnimationFrame(tick);
           return;
         }
       }
 
-      setCurrentTime(t);
+      report(t);
       raf = requestAnimationFrame(tick);
     };
 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [playbackRate, playing]);
+
+  /**
+   * The playhead, driven by the frames the browser actually puts on screen.
+   *
+   * Everything visual hangs off `currentTime`: the crop rect over the stage
+   * and the 9:16 preview both solve their framing from it. Sourced from
+   * `video.currentTime` they run ahead of the picture at a segment cut, since
+   * assigning a seek target updates the reported position immediately while
+   * the element keeps showing the outgoing frame — the framing changed a frame
+   * or two before the footage did. `mediaTime` is the presentation time of the
+   * frame being shown, so the two cannot disagree.
+   *
+   * Forward playback only: reverse is stepped by the loop above, which sets
+   * the position itself and would fight a second writer. Where the callback is
+   * unavailable (Firefox) the loop keeps reporting and behaviour is unchanged.
+   */
+  React.useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !playing || playbackRate < 0) return;
+    if (!("requestVideoFrameCallback" in video)) return;
+
+    frameDrivenRef.current = true;
+    let handle = 0;
+    let cancelled = false;
+    const onFrame: VideoFrameRequestCallback = (_now, metadata) => {
+      if (cancelled) return;
+      setCurrentTime(metadata.mediaTime);
+      handle = video.requestVideoFrameCallback(onFrame);
+    };
+    handle = video.requestVideoFrameCallback(onFrame);
+
+    return () => {
+      cancelled = true;
+      frameDrivenRef.current = false;
+      video.cancelVideoFrameCallback(handle);
+    };
+  }, [playbackRate, playing, src]);
 
   /* ── Editing ─────────────────────────────────────────────────────────── */
 
@@ -610,8 +784,9 @@ export function ReframeEditor() {
         case "3":
         case "4":
         case "5":
+        case "6":
           e.preventDefault();
-          setPlaybackRate(PRESET_RATES[Number(e.key) - 1]);
+          if (!e.repeat) setPlaybackRate(PRESET_RATES[Number(e.key) - 1]);
           break;
 
         // Marking sits at the outer ends of the home row, with the speed keys
@@ -624,15 +799,17 @@ export function ReframeEditor() {
           // an in-point could never be set far ahead of an open draft.
           applyMark(e.shiftKey ? forceMarkIn : markIn);
           break;
+        // Auto-repeat is ignored: the ladder is short enough that a held key
+        // would race to the end, and each rung restarts the decode pipeline.
         case "s":
         case "S":
           e.preventDefault();
-          nudgeRate(-1);
+          if (!e.repeat) nudgeRate(-1);
           break;
         case "d":
         case "D":
           e.preventDefault();
-          nudgeRate(1);
+          if (!e.repeat) nudgeRate(1);
           break;
         case "f":
         case "F":
@@ -738,7 +915,7 @@ export function ReframeEditor() {
 
   /* ── Document save / load ────────────────────────────────────────────── */
 
-  const saveDoc = () => {
+  const downloadDoc = () => {
     if (!doc) return;
     const blob = new Blob([serializeDoc(doc)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -753,34 +930,14 @@ export function ReframeEditor() {
     const current = docRef.current;
     if (!current) return;
     try {
-      const loaded = parseDoc(await jsonFile.text());
-      // Keyframe positions are normalised, so a document saved against a
-      // different encode of the same shot still applies. Keep the *loaded*
-      // video's real metadata and take only the framing from the file.
-      //
-      // Segment bounds are in seconds, though, so they are clamped to this
-      // video's duration and re-merged — a document from a longer source would
-      // otherwise carry segments that sit past the end and never render.
-      const segments = loaded.segments
-        .map((seg) => ({
-          ...seg,
-          start: Math.min(seg.start, current.source.duration),
-          end: Math.min(seg.end, current.source.duration),
-        }))
-        .filter((seg) => seg.end - seg.start > 0);
-      commit(
-        normaliseSegments({
-          ...current,
-          target: loaded.target,
-          keyframes: loaded.keyframes,
-          segments,
-        }),
+      const { doc: merged, aspectMismatch } = applyLoadedDoc(
+        current,
+        parseDoc(await jsonFile.text()),
       );
+      commit(merged);
       setSelectedId(null);
       setError(
-        Math.abs(
-          loaded.source.width / loaded.source.height - current.source.width / current.source.height,
-        ) > 0.01
+        aspectMismatch
           ? "Loaded keyframes came from a video with a different aspect ratio — check the framing."
           : null,
       );
@@ -821,6 +978,7 @@ export function ReframeEditor() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <SaveStatusBadge status={saveStatus} error={saveError} restoredAt={restoredAt} />
           <label className="cursor-pointer">
             <input
               type="file"
@@ -836,8 +994,14 @@ export function ReframeEditor() {
               <Upload className="h-4 w-4" /> Load
             </span>
           </label>
-          <Button variant="secondary" size="sm" onClick={saveDoc}>
-            <Save className="h-4 w-4" /> Save
+          {/* Your edits save themselves; this is for keeping a copy of one. */}
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={downloadDoc}
+            title="Download this edit as a .reframe.json file"
+          >
+            <Save className="h-4 w-4" /> Download
           </Button>
           <label className="cursor-pointer">
             <input
@@ -1095,6 +1259,139 @@ function FilePicker({
           {error}
         </p>
       )}
+
+      <SavedEditsList />
     </div>
   );
+}
+
+/**
+ * What is currently stored, so the picker is not a black box.
+ *
+ * It cannot open anything for you: a browser will not hand back access to a
+ * file granted in a session that has ended, so re-picking the clip is
+ * unavoidable. What it can do is confirm the work is safe, name the file to
+ * look for, and let you throw an edit away.
+ */
+function SavedEditsList() {
+  const [rows, setRows] = React.useState<ReframeDocumentRow[] | null>(null);
+  const [busyId, setBusyId] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let alive = true;
+    listReframeDocuments()
+      .then((r) => {
+        if (alive) setRows(r);
+      })
+      .catch(() => {
+        // Never block the picker on this — it is a convenience panel.
+        if (alive) setRows([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (!rows || rows.length === 0) return null;
+
+  return (
+    <section className="mt-8">
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+        Your saved edits
+      </h2>
+      <p className="mt-1 text-sm text-text-secondary">
+        Open one of these clips again and its edit comes back automatically.
+      </p>
+      <ul className="mt-3 divide-y divide-divider rounded-card bg-surface-high">
+        {rows.map((row) => (
+          <li key={row.id} className="flex items-center gap-3 px-3 py-2.5">
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm">{row.source_name}</p>
+              <p className="text-xs text-text-secondary">
+                {describeSavedDoc(row.doc)} · {formatSavedAt(row.updated_at)}
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={busyId === row.id}
+              onClick={async () => {
+                setBusyId(row.id);
+                try {
+                  await deleteReframeDocument(row.id);
+                  setRows((prev) => prev?.filter((r) => r.id !== row.id) ?? null);
+                } finally {
+                  setBusyId(null);
+                }
+              }}
+            >
+              <Trash2 className="h-4 w-4" /> Delete
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** "3 keyframes · 2 segments", read straight off the stored JSON. */
+function describeSavedDoc(raw: unknown): string {
+  const doc = raw as Partial<ReframeDoc> | null;
+  const keyframes = Array.isArray(doc?.keyframes) ? doc.keyframes.length : 0;
+  const segments = Array.isArray(doc?.segments) ? doc.segments.length : 0;
+  const parts = [`${keyframes} keyframe${keyframes === 1 ? "" : "s"}`];
+  if (segments > 0) parts.push(`${segments} segment${segments === 1 ? "" : "s"}`);
+  return parts.join(" · ");
+}
+
+function formatSavedAt(iso: string): string {
+  const d = new Date(iso);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
+}
+
+/**
+ * Autosave state, in the header beside the manual controls.
+ *
+ * Silent while idle: a badge that says "nothing has happened" is noise. The
+ * failure case is the one that has to be loud, because the whole promise of
+ * this feature is that you can stop thinking about saving.
+ */
+function SaveStatusBadge({
+  status,
+  error,
+  restoredAt,
+}: {
+  status: SaveStatus;
+  error: string | null;
+  restoredAt: string | null;
+}) {
+  if (status === "error") {
+    return (
+      <span
+        className="rounded-pill bg-destructive/15 px-2.5 py-1 text-xs text-destructive"
+        title={error ?? undefined}
+      >
+        Not saved
+      </span>
+    );
+  }
+  if (status === "saving") {
+    return <span className="text-xs text-text-secondary">Saving…</span>;
+  }
+  if (status === "saved") {
+    return <span className="text-xs text-text-secondary">Saved</span>;
+  }
+  if (restoredAt) {
+    return (
+      <span className="rounded-pill bg-accent-muted px-2.5 py-1 text-xs text-accent">
+        Restored from {formatSavedAt(restoredAt)}
+      </span>
+    );
+  }
+  return null;
 }

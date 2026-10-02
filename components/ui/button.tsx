@@ -23,6 +23,31 @@ const sizes: Record<Size, string> = {
   lg: "text-base px-5 py-4 rounded-button",
 };
 
+/**
+ * The button recipe as class names, so an anchor (`next/link`) can look like a
+ * button without becoming one — used by the landing page's CTAs.
+ */
+export function buttonClasses({
+  variant = "primary",
+  size = "md",
+  fullWidth,
+  className,
+}: {
+  variant?: Variant;
+  size?: Size;
+  fullWidth?: boolean;
+  className?: string;
+} = {}) {
+  return cn(
+    "inline-flex items-center justify-center gap-2 whitespace-nowrap transition select-none",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50",
+    variants[variant],
+    sizes[size],
+    fullWidth && "w-full",
+    className,
+  );
+}
+
 export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant;
   size?: Size;
@@ -34,13 +59,8 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     <button
       ref={ref}
       className={cn(
-        "inline-flex items-center justify-center gap-2 whitespace-nowrap transition select-none",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50",
         "disabled:cursor-not-allowed",
-        variants[variant],
-        sizes[size],
-        fullWidth && "w-full",
-        className,
+        buttonClasses({ variant, size, fullWidth, className }),
       )}
       {...props}
     />

@@ -43,7 +43,7 @@ function TournamentDetail() {
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-6">
-      <Link href="/" className="text-sm text-text-secondary hover:text-text-primary">
+      <Link href="/tournaments/" className="text-sm text-text-secondary hover:text-text-primary">
         ← All tournaments
       </Link>
 
