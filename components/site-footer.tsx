@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Logo } from "./logo";
+import { SHOW_WEB_VIDEO_TOOLS } from "@/lib/features";
 import { APP_STORE_URL } from "@/lib/links";
 
 /** Landing-page footer. Deliberately not in the root layout — the working pages
@@ -19,12 +20,16 @@ export function SiteFooter() {
           <Link href="/tournaments/" className="hover:text-text-primary">
             Tournaments
           </Link>
-          <Link href="/reframe/" className="hover:text-text-primary">
-            Reframe
-          </Link>
-          <Link href="/compare/" className="hover:text-text-primary">
-            Compare
-          </Link>
+          {SHOW_WEB_VIDEO_TOOLS && (
+            <>
+              <Link href="/reframe/" className="hover:text-text-primary">
+                Reframe
+              </Link>
+              <Link href="/compare/" className="hover:text-text-primary">
+                Compare
+              </Link>
+            </>
+          )}
           <a
             href={APP_STORE_URL}
             target="_blank"

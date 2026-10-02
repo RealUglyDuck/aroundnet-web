@@ -1,6 +1,6 @@
 # AroundNet Web
 
-Web tournament manager for **AroundNet** (Roundnet/Spikeball). A Next.js app that
+Web tournament manager for **AroundNet** (roundnet). A Next.js app that
 reads and writes the **same Supabase backend as the iOS app** — tournaments, groups,
 brackets and scores sync live in both directions. Mirrors the iOS design system
 (lime-on-black) and calls the same Supabase edge functions for all tournament logic.

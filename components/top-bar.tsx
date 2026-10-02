@@ -12,13 +12,18 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
+import { SHOW_WEB_VIDEO_TOOLS } from "@/lib/features";
 import { cn } from "@/lib/utils";
 
 /** Trailing slashes throughout — `trailingSlash: true` in next.config.ts. */
 const NAV = [
   { href: "/tournaments/", label: "Tournaments" },
-  { href: "/reframe/", label: "Reframe" },
-  { href: "/compare/", label: "Compare" },
+  ...(SHOW_WEB_VIDEO_TOOLS
+    ? [
+        { href: "/reframe/", label: "Reframe" },
+        { href: "/compare/", label: "Compare" },
+      ]
+    : []),
 ];
 
 export function TopBar() {

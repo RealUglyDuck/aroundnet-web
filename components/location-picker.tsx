@@ -6,6 +6,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
 import { Spinner } from "./ui/spinner";
+import { cartoTiles } from "@/lib/map-tiles";
 
 export interface LocationValue {
   name: string;
@@ -13,7 +14,7 @@ export interface LocationValue {
   lng: number | null;
 }
 
-// Free basemaps (no API key). "Streets" (CARTO Voyager) shows parks as green and
+// Basemaps: CARTO (keyed — see lib/map-tiles.ts) and Esri. "Streets" (CARTO Voyager) shows parks as green and
 // is best for spotting leisure sites; "Satellite" (Esri) shows actual pitches.
 type Basemap = "streets" | "satellite" | "dark";
 
@@ -26,11 +27,7 @@ const raster = (tiles: string[], attribution: string, tileSize = 256) =>
 
 const STYLES: Record<Basemap, import("maplibre-gl").StyleSpecification> = {
   streets: raster(
-    [
-      "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
-      "https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
-      "https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
-    ],
+    cartoTiles("rastertiles/voyager"),
     "© OpenStreetMap contributors © CARTO",
   ),
   satellite: raster(
@@ -38,11 +35,7 @@ const STYLES: Record<Basemap, import("maplibre-gl").StyleSpecification> = {
     "Imagery © Esri, Maxar, Earthstar Geographics",
   ),
   dark: raster(
-    [
-      "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-      "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-      "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-    ],
+    cartoTiles("dark_all"),
     "© OpenStreetMap contributors © CARTO",
   ),
 };

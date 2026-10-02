@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import "maplibre-gl/dist/maplibre-gl.css";
+import { cartoTiles } from "@/lib/map-tiles";
 
 export interface MapPoint {
   id: string;
@@ -10,17 +11,13 @@ export interface MapPoint {
   lng: number;
 }
 
-// Free dark raster basemap (CARTO dark_all) — no API key required. Matches #111.
+// Dark raster basemap (CARTO dark_all, keyed — see lib/map-tiles.ts). Matches #111.
 const DARK_STYLE = {
   version: 8 as const,
   sources: {
     carto: {
       type: "raster" as const,
-      tiles: [
-        "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-        "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-        "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-      ],
+      tiles: cartoTiles("dark_all"),
       tileSize: 256,
       attribution: "© OpenStreetMap contributors © CARTO",
     },

@@ -1,14 +1,18 @@
 import * as React from "react";
 import type { LucideIcon } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardBody } from "@/components/ui/card";
 
 export function FeatureCard({
   icon: Icon,
   title,
+  pro = false,
   children,
 }: {
   icon: LucideIcon;
   title: string;
+  /** Marks a feature that needs AroundNet Pro in the iOS app. */
+  pro?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -18,7 +22,10 @@ export function FeatureCard({
           <Icon size={18} />
         </span>
         <div>
-          <h3 className="text-[15px] font-semibold">{title}</h3>
+          <h3 className="flex items-center gap-2 text-[15px] font-semibold">
+            {title}
+            {pro && <Badge tone="accent">Pro</Badge>}
+          </h3>
           <p className="mt-1 text-sm leading-relaxed text-text-secondary">{children}</p>
         </div>
       </CardBody>

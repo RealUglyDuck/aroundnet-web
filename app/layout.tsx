@@ -5,7 +5,7 @@ import { TopBar } from "@/components/top-bar";
 import { asset } from "@/lib/utils";
 
 const description =
-  "AR play-area setup and serve practice on iPhone, tournament management and video breakdown on the web.";
+  "Roundnet on iPhone: AR court setup, serve recording and analysis, rules and tournaments. Run events from the web.";
 
 export const metadata: Metadata = {
   // Social images must be absolute; the site is served from the CNAME apex.
