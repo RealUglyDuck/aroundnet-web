@@ -14,7 +14,7 @@ export default function PrivacyPage() {
   return (
     <LegalPage
       title="Privacy Policy"
-      updated="2 October 2026"
+      updated="16 October 2026"
       intro={
         <>
           <p>
@@ -26,8 +26,10 @@ export default function PrivacyPage() {
             In short: most of what you do in AroundNet — your videos, serve clips and
             scoreboards — stays on your device. What reaches us is your account, the
             tournaments and teams you take part in, backups of your Reframe edits, and
-            whether you have AroundNet Pro. We don&rsquo;t use advertising or analytics
-            tracking, and we don&rsquo;t sell your information.
+            whether you have AroundNet Pro. The app also sends us usage and crash
+            reports so we can see which features help and fix what breaks. We
+            don&rsquo;t use advertising, we don&rsquo;t track you across other apps or
+            websites, and we don&rsquo;t sell your information.
           </p>
         </>
       }
@@ -74,6 +76,27 @@ export default function PrivacyPage() {
           when it started and when it renews or ends, and whether it is active, in a
           free trial or has been refunded. We use this to switch Pro features on and
           off, including on our other platforms.
+        </p>
+        <p>
+          <strong>Feedback and support.</strong> If you email us — for example with
+          Send Feedback in the app — we receive your email address, your message and
+          anything you attach. The app adds its version, your iOS version and your
+          device model to the draft, which you can remove before sending. We use this
+          only to reply and to improve AroundNet, and delete it when it is no longer
+          needed.
+        </p>
+        <p>
+          <strong>App usage and crash reports.</strong> The iPhone app records which
+          screens you open and what you do in them — for example starting a serve
+          session, opening a tutorial, or viewing and closing the AroundNet Pro screen
+          — along with your device model, iOS version, app version, language and
+          country. If the app crashes or hits an error, it sends a report of what
+          went wrong. Before you sign in, these are linked to a random identifier
+          created for your installation of the app; once you sign in, they are
+          linked to your account, including your name and email address. We use
+          this only to understand how AroundNet is used, to decide what to improve,
+          and to fix bugs. It never includes your videos, audio or anything you type
+          into a scoreboard. The website does not collect this.
         </p>
       </LegalSection>
 
@@ -148,6 +171,17 @@ export default function PrivacyPage() {
             purchase records from the App Store.
           </li>
           <li>
+            <strong>PostHog</strong> — app usage and crash reports. Data is stored in
+            the European Union (Germany).
+          </li>
+          <li>
+            <strong>YouTube</strong> (Google) — plays tutorial videos inside the app.
+            When you start one, YouTube receives your IP address and device
+            information and may set its own cookies in the player, under
+            Google&rsquo;s privacy policy. Nothing is sent to YouTube unless you play
+            a tutorial.
+          </li>
+          <li>
             <strong>Apple</strong> — App Store purchases, Apple Maps in the app, and
             speech recognition where it is not done on your device.
           </li>
@@ -186,7 +220,9 @@ export default function PrivacyPage() {
           </li>
           <li>
             <strong>Legitimate interests</strong> — to keep AroundNet secure, prevent
-            misuse and fix problems.
+            misuse, fix problems, and understand how the app is used so we can
+            improve it (usage and crash reports). You can object to this at any time
+            by emailing us.
           </li>
           <li>
             <strong>Consent</strong> — for camera, microphone, speech recognition,
@@ -209,6 +245,11 @@ export default function PrivacyPage() {
           created. Copies in routine backups are removed within a short period.
           Subscription records may be kept by Apple and RevenueCat for as long as they
           need them for accounting and legal reasons.
+        </p>
+        <p>
+          Usage and crash reports are kept only as long as they are useful for
+          improving the app and fixing problems. To have the reports linked to your
+          account deleted, email us; this is separate from deleting your account.
         </p>
         <p>
           Signing out or deleting the app removes nothing from our servers; deleting
