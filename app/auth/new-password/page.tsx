@@ -7,15 +7,25 @@ import { Logo } from "@/components/logo";
 import { Button } from "@/components/ui/button";
 import { Input, Field } from "@/components/ui/input";
 import { CenteredSpinner, Spinner } from "@/components/ui/spinner";
+import { supabase } from "@/lib/supabase/client";
+
+/** The `?token_hash=` the recovery email template puts on its link, if any. */
+function recoveryTokenHash(): string | null {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  return params.get("type") === "recovery" ? params.get("token_hash") : null;
+}
 
 /**
  * Where the password-recovery email lands.
  *
- * The recovery link carries a session in the URL hash, which the client picks up
- * automatically (detectSessionInUrl) — so by the time this renders the user is
- * transiently signed in and `updateUser({ password })` is allowed. iOS points its
- * recovery mail here too, which is why this lives on the web rather than behind a
- * deep link.
+ * The email template links here with `?token_hash=…&type=recovery`, and this page
+ * trades that for a session with `verifyOtp`. Unlike the default link, that works
+ * however the reset was asked for: the iOS SDK requests resets with PKCE, whose
+ * default link carries a `?code=` only the requesting phone could exchange, so
+ * those links used to land here with no session. A `#access_token=…` hash
+ * (implicit flow) is still picked up by detectSessionInUrl as before. Either way
+ * the user ends up transiently signed in and `updateUser({ password })` is allowed.
  */
 export default function NewPasswordPage() {
   const { user, loading, updatePassword } = useAuth();
@@ -24,6 +34,18 @@ export default function NewPasswordPage() {
   const [confirm, setConfirm] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [verifying, setVerifying] = React.useState(() => recoveryTokenHash() !== null);
+
+  React.useEffect(() => {
+    const tokenHash = recoveryTokenHash();
+    if (!tokenHash) return;
+    // The hash is single-use: drop it from the address bar so a reload doesn't
+    // retry it and report a perfectly good session as an expired link.
+    window.history.replaceState(null, "", window.location.pathname);
+    supabase.auth
+      .verifyOtp({ token_hash: tokenHash, type: "recovery" })
+      .finally(() => setVerifying(false));
+  }, []);
 
   const mismatch = confirm.length > 0 && password !== confirm;
   const canSubmit = password.length >= 8 && password === confirm;
@@ -39,7 +61,9 @@ export default function NewPasswordPage() {
     else router.replace("/");
   }
 
-  if (loading) return <CenteredSpinner />;
+  // While verifying, `user` may still be whoever was signed in on this browser
+  // before, so hold off rather than offer to change their password.
+  if (loading || verifying) return <CenteredSpinner />;
 
   // No recovery session — the link was never opened, or it expired.
   if (!user) {
